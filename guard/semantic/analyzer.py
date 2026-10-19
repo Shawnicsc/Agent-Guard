@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 
 from guard.contracts import (
@@ -23,7 +24,7 @@ from guard.contracts import (
 from guard.llm.client import LLMClient, LLMError
 from guard.llm.schema import structured_call
 from guard.semantic.prompts import build_analysis_messages
-from guard.taint.detectors import injection_evidence
+from guard.taint.detectors import detect_injection, injection_evidence, normalize_for_detection
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +39,21 @@ class AnalysisRecord:
     cached: bool = False
     raw_response: str = ""
     sources_used: list[str] = field(default_factory=list)
+    duration_ms: float = 0.0
+
+
+def _evidence_excerpt(text: str) -> str:
+    """长内容保留首尾及命中指令附近片段，避免前置填充稀释证据。"""
+    normalized = normalize_for_detection(text)
+    if len(normalized) <= SOURCE_EXCERPT_CHARS:
+        return normalized
+    pieces = [normalized[:120]]
+    for quote, _ in detect_injection(text)[:2]:
+        position = normalized.find(quote)
+        if position >= 0:
+            pieces.append(normalized[max(0, position - 100):position + 160])
+    pieces.append(normalized[-160:])
+    return " … ".join(pieces)[:SOURCE_EXCERPT_CHARS]
 
 
 class SemanticAnalyzer:
@@ -54,7 +70,7 @@ class SemanticAnalyzer:
         """
         source_payload = [
             {"source_id": s.source_id, "type": s.type.value, "uri": s.uri,
-             "excerpt": excerpt[:SOURCE_EXCERPT_CHARS]}
+             "excerpt": _evidence_excerpt(excerpt)}
             for s, excerpt in recent_sources[-MAX_ANALYSIS_SOURCES:]
         ]
         key = content_hash(json.dumps({
@@ -69,11 +85,13 @@ class SemanticAnalyzer:
                                   sources_used=cached.sources_used)
 
         messages = build_analysis_messages(mission, envelope, source_payload)
+        started = time.perf_counter()
         try:
             facts, raw = structured_call(self.llm, messages, SemanticFacts)
         except LLMError as exc:
             log.warning("语义研判服务不可用: %s", exc)
-            return AnalysisRecord(facts=None, raw_response=str(exc))
+            return AnalysisRecord(facts=None, raw_response=str(exc),
+                                  duration_ms=(time.perf_counter() - started) * 1000)
         if facts is None:
             # 重试耗尽：保守 uncertain，不信任未通过校验的输出
             facts = SemanticFacts.uncertain()
@@ -97,6 +115,7 @@ class SemanticAnalyzer:
             ],
         })
         record = AnalysisRecord(facts=facts, raw_response=raw or "",
-                                sources_used=[s.source_id for s, _ in recent_sources])
+                                sources_used=[s.source_id for s, _ in recent_sources],
+                                duration_ms=(time.perf_counter() - started) * 1000)
         self._cache[key] = record
         return record

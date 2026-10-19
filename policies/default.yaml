@@ -1,6 +1,6 @@
 # 首批硬规则（DESIGN.md 第 6 节）：覆盖赛题能力 3 的五类管控。
 # 规则按 priority 降序评估；同一调用命中多条时 BLOCK > CONFIRM > ALLOW。
-version: c1
+version: c2
 
 # 信任域名白名单：不在此列且非本地的出站目标均视为 external
 trusted_domains:
@@ -55,9 +55,11 @@ rules:
   - id: confirm_mcp_call
     priority: 35
     when:
-      action_is: mcp.call
+      all:
+        - action_is: mcp.call
+        - mcp_server_trust: external
     decision: CONFIRM
-    reason: 调用外部 MCP 工具需要用户确认
+    reason: 调用未在任务资源范围内预授权的 MCP Server 需要用户确认
 
   # ---- 一类：敏感路径写入 ----
   - id: deny_sensitive_write

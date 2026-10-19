@@ -282,3 +282,13 @@ rules:
                semantic_facts=SemanticFacts(task_relation=TaskRelation.ALIGNED))
     r = engine.decide(ctx)
     assert r.action.value == "ALLOW" and r.rule_ids == ["aligned_ok"]
+
+
+def test_mcp_server_pre_authorization_keeps_unlisted_servers_confirmed(session):
+    engine = PolicyEngine(compile_policy_file(settings.policy_file))
+    args = {"server": "agentdojo", "name": "read", "arguments": {}}
+    assert engine.decide(_ctx(session, "mcp.call", args)).action.value == "CONFIRM"
+    session.mission.allowed_resources.append("mcp://agentdojo")
+    assert engine.decide(_ctx(session, "mcp.call", args)).action.value == "ALLOW"
+    args["server"] = "other"
+    assert engine.decide(_ctx(session, "mcp.call", args)).action.value == "CONFIRM"

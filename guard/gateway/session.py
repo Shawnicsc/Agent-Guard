@@ -76,10 +76,18 @@ class GatewaySession:
         policy_engine: PolicyEngine | None = None,
         semantic_analyzer: SemanticAnalyzer | None = None,
         mcp_proxy: StdioMCPProxy | None = None,
+        agent_id: str = MAIN_AGENT_ID,
+        agent_capabilities: frozenset[str] | None = None,
+        parent_call_id: str | None = None,
     ) -> None:
         self.store = store
         self.mission = mission
         self.trace_id = trace_id
+        self.agent_id = agent_id
+        self.agent_capabilities = (agent_capabilities if agent_capabilities is not None
+                                   else frozenset(mission.allowed_actions) & MAIN_CAPABILITIES)
+        self.parent_call_id = parent_call_id
+        self.spawned_agents: dict[str, tuple[frozenset[str], str]] = {}
         self.workspace_root = workspace_root
         self.resolver = PathResolver({"workspace": workspace_root})
         self.container_name = container_name
@@ -92,6 +100,7 @@ class GatewaySession:
         self.taint = PropagationEngine()
         self.recent_sources: list[tuple[ContentSource, str]] = []
         self.semantic_analyzer = semantic_analyzer
+        self.last_analysis_ms: float | None = None
         self.mcp_proxy = mcp_proxy
         # 语义研判结果；C 阶段由 analyzer 写入，缺失时按 uncertain 保守处理
         self.semantic_facts: SemanticFacts | None = None
@@ -174,21 +183,37 @@ class GatewaySession:
                       parent_call_id: str | None = None) -> ToolCallEnvelope:
         return build_envelope(
             session_id=self.mission.session_id,
-            agent_id=MAIN_AGENT_ID,
-            agent_capabilities=MAIN_CAPABILITIES,
+            agent_id=self.agent_id,
+            agent_capabilities=self.agent_capabilities,
             mission_version=self.mission.version,
             tool=tool,
             arguments=arguments,
-            parent_call_id=parent_call_id,
+            parent_call_id=parent_call_id or self.parent_call_id,
             trace_id=self.trace_id,
         )
 
+    def child_session(self, agent_id: str) -> GatewaySession:
+        """为已签发的子 Agent 建独立调用身份，沿用同一任务与证据链。"""
+        capabilities, parent_call_id = self.spawned_agents[agent_id]
+        child = GatewaySession(
+            self.store, self.mission, self.workspace_root,
+            trace_id=self.trace_id, policy_engine=self.policy_engine,
+            semantic_analyzer=self.semantic_analyzer, mcp_proxy=self.mcp_proxy,
+            agent_id=agent_id, agent_capabilities=capabilities,
+            parent_call_id=parent_call_id,
+        )
+        child.taint = self.taint
+        child.recent_sources = list(self.recent_sources)
+        return child
+
     def decide(self, envelope: ToolCallEnvelope) -> Decision:
         """三态裁决：硬规则 -> 已批准精确调用 -> CONFIRM -> 默认放行。"""
+        self.last_analysis_ms = None
         self.store.save_call(envelope)
         self.store.append_event(AuditEvent(
             trace_id=envelope.trace_id, type=EventType.CALL_RECEIVED,
             session_id=envelope.session_id, call_id=envelope.call_id,
+            parent_call_id=envelope.parent_call_id,
             agent_id=envelope.agent_id,
             payload={"tool": envelope.tool, "arguments": envelope.arguments},
         ))
@@ -207,6 +232,7 @@ class GatewaySession:
         self.store.append_event(AuditEvent(
             trace_id=envelope.trace_id, type=EventType.DECISION_MADE,
             session_id=envelope.session_id, call_id=envelope.call_id,
+            parent_call_id=envelope.parent_call_id,
             decision_id=decision.decision_id,
             payload={"action": decision.action.value, "rule_ids": decision.rule_ids,
                      "reason": decision.reason},
@@ -235,15 +261,18 @@ class GatewaySession:
                     and self.recent_sources:
                 analysis = self.semantic_analyzer.analyze(
                     self.mission, envelope, self.recent_sources)
+                self.last_analysis_ms = analysis.duration_ms
                 if analysis.facts is None:
                     return self._degraded_decision(envelope, spec)
                 ctx.semantic_facts = analysis.facts
                 self.store.append_event(AuditEvent(
                     trace_id=envelope.trace_id, type=EventType.SEMANTIC_ANALYZED,
                     session_id=envelope.session_id, call_id=envelope.call_id,
+                    parent_call_id=envelope.parent_call_id,
                     agent_id=envelope.agent_id,
                     payload={"facts": analysis.facts.model_dump(mode="json"),
-                             "sources": analysis.sources_used, "cached": analysis.cached},
+                             "sources": analysis.sources_used, "cached": analysis.cached,
+                             "duration_ms": analysis.duration_ms},
                 ))
                 result = self.policy_engine.decide(ctx)
         except Exception as exc:
@@ -341,6 +370,7 @@ class GatewaySession:
             result = self.subagent.spawn(
                 envelope.arguments.get("task", ""),
                 envelope.arguments.get("capabilities") or [],
+                envelope.call_id,
             )
         elif envelope.tool == "memory.write":
             result, source = self.memory.write(
@@ -375,6 +405,7 @@ class GatewaySession:
             self.store.append_event(AuditEvent(
                 trace_id=envelope.trace_id, type=EventType.SOURCE_RECORDED,
                 session_id=envelope.session_id, call_id=envelope.call_id,
+                parent_call_id=envelope.parent_call_id,
                 source_id=source.source_id,
                 payload={"type": source.type.value, "uri": source.uri,
                          "content_hash": source.content_hash,
@@ -386,6 +417,7 @@ class GatewaySession:
                 type=(EventType.MEMORY_READ if envelope.tool == "memory.read"
                       else EventType.MEMORY_WRITTEN),
                 session_id=envelope.session_id, call_id=envelope.call_id,
+                parent_call_id=envelope.parent_call_id,
                 source_id=source.source_id if source else None,
                 payload={"key": envelope.arguments.get("key", "")},
             ))
@@ -393,6 +425,7 @@ class GatewaySession:
             self.store.append_event(AuditEvent(
                 trace_id=envelope.trace_id, type=EventType.MCP_RELAYED,
                 session_id=envelope.session_id, call_id=envelope.call_id,
+                parent_call_id=envelope.parent_call_id,
                 source_id=source.source_id if source else None,
                 payload={"server": envelope.arguments.get("server", ""),
                          "name": envelope.arguments.get("name", "")},
@@ -401,6 +434,7 @@ class GatewaySession:
         self.store.append_event(AuditEvent(
             trace_id=envelope.trace_id, type=event_type,
             session_id=envelope.session_id, call_id=envelope.call_id,
+            parent_call_id=envelope.parent_call_id,
             agent_id=envelope.agent_id, source_id=source.source_id if source else None,
             payload={"tool": envelope.tool, "ok": result.ok,
                      "output": result.output[:2000], "error": result.error},
@@ -450,6 +484,7 @@ class GatewaySession:
         self.store.append_event(AuditEvent(
             trace_id=envelope.trace_id, type=EventType.LABEL_ATTACHED,
             session_id=envelope.session_id, call_id=envelope.call_id,
+            parent_call_id=envelope.parent_call_id,
             source_id=source.source_id,
             payload={"labels": [x.value for x in labels],
                      "snippets": len(found), "injection_hits": len(injection_hits)},

@@ -133,3 +133,16 @@ def test_policies_validate_route(tmp_path, monkeypatch):
     assert body["valid"] is False and "未注册的谓词" in body["error"]
     # 校验不影响当前生效版本
     assert client.get("/policies").json()["version"] == "c1"
+
+
+def test_incident_routes(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    created = client.post("/sessions", json={"user_id": "u1", "goal": "读 README"}).json()
+    trace_id = created["trace_id"]
+    listed = client.get("/incidents")
+    assert listed.status_code == 200
+    assert trace_id in {item["trace_id"] for item in listed.json()}
+    detail = client.get(f"/incidents/{trace_id}")
+    assert detail.status_code == 200
+    assert detail.json()["trace_id"] == trace_id
+    assert client.get("/incidents/missing").status_code == 404

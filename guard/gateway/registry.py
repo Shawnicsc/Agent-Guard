@@ -96,7 +96,7 @@ def all_tools() -> dict[str, ToolSpec]:
     return dict(_TOOLS)
 
 
-def openai_tools() -> list[dict[str, Any]]:
+def openai_tools(allowed: frozenset[str] | None = None) -> list[dict[str, Any]]:
     """OpenAI 协议 tools 数组（function calling），Agent 与 LLM 通用接口共用。"""
     return [
         {
@@ -107,7 +107,7 @@ def openai_tools() -> list[dict[str, Any]]:
                 "parameters": spec.parameters,
             },
         }
-        for spec in _TOOLS.values()
+        for spec in _TOOLS.values() if allowed is None or spec.name in allowed
     ]
 
 _register(ToolSpec(

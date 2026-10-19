@@ -25,6 +25,7 @@ import json
 import logging
 import subprocess
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from guard.audit.store import AuditStore
@@ -39,6 +40,7 @@ from guard.semantic.analyzer import SemanticAnalyzer
 log = logging.getLogger(__name__)
 
 MISSION_TIMEOUT_S = 600.0
+MAX_SUBAGENT_DEPTH = 2
 
 
 class RunnerError(RuntimeError):
@@ -47,11 +49,12 @@ class RunnerError(RuntimeError):
 
 class SandboxRunner:
     def __init__(self, session: GatewaySession, llm: LLMClient, spec: SandboxSpec,
-                 store: AuditStore) -> None:
+                 store: AuditStore, depth: int = 0) -> None:
         self.session = session
         self.llm = llm
         self.spec = spec
         self.store = store
+        self.depth = depth
         self.session.semantic_analyzer = SemanticAnalyzer(llm)
         # 全部调用记录（含被拒），供场景断言与测试使用
         self.call_log: list[dict] = []
@@ -73,11 +76,13 @@ class SandboxRunner:
             self.store.append_event(AuditEvent(
                 trace_id=self.session.trace_id, type=EventType.SANDBOX_STARTED,
                 session_id=self.session.mission.session_id,
+                agent_id=self.session.agent_id,
                 payload={"container": self.spec.container_name},
             ))
             self.store.append_event(AuditEvent(
                 trace_id=self.session.trace_id, type=EventType.AGENT_STARTED,
                 session_id=self.session.mission.session_id,
+                agent_id=self.session.agent_id,
                 payload={"message": message},
             ))
             while time.monotonic() < deadline:
@@ -109,6 +114,7 @@ class SandboxRunner:
         self.store.append_event(AuditEvent(
             trace_id=self.session.trace_id, type=EventType.AGENT_DONE,
             session_id=self.session.mission.session_id,
+            agent_id=self.session.agent_id,
             payload={"completed": summary["completed"], "summary": summary["summary"]},
         ))
         return summary
@@ -124,7 +130,8 @@ class SandboxRunner:
             payload={"request_id": request_id, "messages": messages},
         ))
         try:
-            response = self.llm.chat(messages, tools=openai_tools())
+            response = self.llm.chat(
+                messages, tools=openai_tools(self.session.agent_capabilities))
         except LLMError as exc:
             self._send(proc, {"type": "fatal", "message": f"LLM 服务不可用: {exc}"})
             return
@@ -166,6 +173,30 @@ class SandboxRunner:
         decision = self.session.decide(envelope)
         record["decision"] = decision
         result, _source = self.session.try_execute(envelope, decision)
+        if tool == "agent.spawn" and result.ok:
+            if self.depth >= MAX_SUBAGENT_DEPTH:
+                result = result.model_copy(update={
+                    "ok": False, "error": "子 Agent 最大派发深度已达到",
+                })
+            else:
+                child_id = json.loads(result.output)["agent_id"]
+                child_session = self.session.child_session(child_id)
+                if self.depth + 1 >= MAX_SUBAGENT_DEPTH:
+                    child_session.agent_capabilities = frozenset(
+                        capability for capability in child_session.agent_capabilities
+                        if capability != "agent.spawn"
+                    )
+                child_spec = replace(self.spec,
+                                     session_id=f"{self.spec.session_id}-{child_id}")
+                child_runner = SandboxRunner(child_session, self.llm, child_spec,
+                                             self.store, depth=self.depth + 1)
+                child_summary = child_runner.run(arguments.get("task", ""))
+                self.session.recent_sources = (self.session.recent_sources +
+                                               child_session.recent_sources)[-6:]
+                result = result.model_copy(update={
+                    "output": json.dumps({"agent_id": child_id,
+                                          "summary": child_summary}, ensure_ascii=False),
+                })
         refused = not (decision.action.value == "ALLOW" and result.ok)
         record.update(status=decision.action.value, ok=result.ok, error=result.error)
         self._send(proc, {

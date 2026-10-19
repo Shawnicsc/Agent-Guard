@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import base64
 import difflib
 import re
 from dataclasses import dataclass
@@ -54,8 +55,18 @@ class PropagationEngine:
     # ---- 检查（调用侧） ----
 
     def exact_labels(self, arguments: dict) -> frozenset[DataLabelName]:
-        """确定性：exact_bytes 命中（B 阶段行为，BLOCK 档规则可用）。"""
-        return self.tracker.labels_in(arguments)
+        """逐字节或可逆编码命中；编码后的外发仍按确定性传播处理。"""
+        labels = set(self.tracker.labels_in(arguments))
+        values = string_values(arguments)
+        for snippet, snippet_labels in self.tracker.snippets:
+            raw = snippet.encode("utf-8")
+            variants = {
+                base64.b64encode(raw).decode("ascii"),
+                base64.urlsafe_b64encode(raw).decode("ascii").rstrip("="),
+            }
+            if any(encoded in value for encoded in variants for value in values):
+                labels.update(snippet_labels)
+        return frozenset(labels)
 
     def substring_hits(self, arguments: dict) -> list[tuple[DataLabelName, str, str]]:
         """确定性改写：载荷值包含片段的子串（field_copy/concat）。

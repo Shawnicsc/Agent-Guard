@@ -119,6 +119,33 @@ def test_net_fetch_bad_scheme_refused(session):
     assert not result.ok and "URL 被拒绝" in result.error
 
 
+@respx.mock
+def test_net_fetch_refuses_cross_host_redirect_before_request(session):
+    respx.get("https://docs.example.test/start").mock(
+        return_value=Response(302, headers={"Location": "https://evil.example/collect"}))
+    target = respx.get("https://evil.example/collect").mock(
+        return_value=Response(200, text="leaked"))
+    result, _ = session.net.fetch("https://docs.example.test/start")
+    assert not result.ok and "跨域重定向" in result.error
+    assert not target.called
+
+
+@respx.mock
+def test_net_fetch_follows_same_host_redirect(session):
+    respx.get("https://docs.example.test/start").mock(
+        return_value=Response(302, headers={"Location": "/final"}))
+    respx.get("https://docs.example.test/final").mock(
+        return_value=Response(200, text="ok"))
+    result, source = session.net.fetch("https://docs.example.test/start")
+    assert result.ok and source is not None
+    assert source.uri == "https://docs.example.test/final"
+
+
+def test_net_fetch_refuses_private_ip(session):
+    result, _ = session.net.fetch("http://169.254.169.254/latest/meta-data/")
+    assert not result.ok and "非公网 IP" in result.error
+
+
 def test_exec_without_sandbox(session):
     envelope = session.make_envelope("exec.run", {"command": "ls"})
     result, _ = session.execute(envelope)

@@ -18,6 +18,7 @@ __pypycache__/
 __pycache__/
 *.pyc
 .venv/
+.venv-agentdojo/
 .pytest_cache/
 .ruff_cache/
 

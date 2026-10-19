@@ -108,6 +108,14 @@ def _eval_destination_trust(param: str, ctx: EvalContext) -> bool:
     return (not trusted) if param == "external" else trusted
 
 
+def _eval_mcp_server_trust(param: str, ctx: EvalContext) -> bool:
+    if param not in ("trusted", "external"):
+        raise ValueError(f"mcp_server_trust 参数必须是 trusted/external: {param!r}")
+    server = ctx.envelope.arguments.get("server")
+    trusted = isinstance(server, str) and f"mcp://{server}" in ctx.mission.allowed_resources
+    return trusted if param == "trusted" else not trusted
+
+
 def _eval_payload_has_label(param, ctx: EvalContext) -> bool:
     labels = {param} if isinstance(param, str) else set(param)
     return bool(ctx.carried_labels & labels)
@@ -176,6 +184,7 @@ PREDICATES: dict[str, PredicateDef] = {
     "action_is": PredicateDef(_check_str("action_is"), _eval_action_is),
     "path_under": PredicateDef(_check_str_list("path_under"), _eval_path_under),
     "destination_trust": PredicateDef(_check_str("destination_trust"), _eval_destination_trust),
+    "mcp_server_trust": PredicateDef(_check_str("mcp_server_trust"), _eval_mcp_server_trust),
     "payload_has_label": PredicateDef(_check_str_list("payload_has_label"),
                                       _eval_payload_has_label),
     "payload_suspected_label": PredicateDef(

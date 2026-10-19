@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from guard.audit.trace import rebuild_dag
 from guard.config import settings
 from guard.contracts import Decision
 from guard.gateway.session import MAIN_AGENT_ID, GatewaySession
@@ -135,3 +136,16 @@ def _policy_summary(engine) -> dict:
             for r in sorted(policy.rules, key=lambda x: -x.priority)
         ],
     }
+
+
+@router.get("/incidents")
+def list_incidents(request: Request) -> list[dict]:
+    return [dict(row) for row in request.app.state.store.list_traces()]
+
+
+@router.get("/incidents/{trace_id}")
+def get_incident(trace_id: str, request: Request) -> dict:
+    try:
+        return rebuild_dag(request.app.state.store, trace_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc

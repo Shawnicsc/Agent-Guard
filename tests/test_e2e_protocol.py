@@ -137,3 +137,40 @@ def test_full_chain_refused_call_reported(store, tmp_path, mock_llm):
     assert call["tool"] == "fs.read"
     assert call["ok"] is False
     assert "路径被拒绝" in call["error"]
+
+
+@respx.mock
+def test_subagent_runs_in_separate_sandbox_with_narrowed_capabilities(
+        store, tmp_path, mock_llm):
+    """父 Agent 派发子 Agent；子 Agent 的调用继承同一 trace 与父调用 ID。"""
+    docker_available_or_skip()
+    respx.post(f"{LLM_BASE}/chat/completions").mock(side_effect=[
+        Response(200, json={"choices": [{"message": {"content": "", "tool_calls": [{
+            "id": "spawn_1", "type": "function", "function": {
+                "name": "agent.spawn", "arguments": '{"task":"读取 README.md",'
+                '"capabilities":["fs.read"]}',
+            },
+        }]}, "finish_reason": "tool_calls"}]}),
+        Response(200, json={"choices": [{"message": {"content": "", "tool_calls": [{
+            "id": "read_1", "type": "function", "function": {
+                "name": "fs.read", "arguments": '{"path":"README.md"}',
+            },
+        }]}, "finish_reason": "tool_calls"}]}),
+        Response(200, json={"choices": [{"message": {"content": "子任务完成"},
+                                        "finish_reason": "stop"}]}),
+        Response(200, json={"choices": [{"message": {"content": "主任务完成"},
+                                        "finish_reason": "stop"}]}),
+    ])
+    session = GatewaySession.create(store, tmp_path / "ws", user_id="u1",
+                                    goal="请子 Agent 阅读 README.md")
+    (session.workspace_root / "README.md").write_text("TaskNote 项目")
+    spec = SandboxSpec(session_id=session.mission.session_id,
+                       image=settings.sandbox_image, agent_dir=settings.demo_agent_dir)
+    summary = SandboxRunner(session, mock_llm, spec, store).run("派发子 Agent 阅读 README.md")
+    assert summary["completed"]
+    events = store.events_by_trace(session.trace_id)
+    child = next(e for e in events if e["type"] == "subagent_spawned")
+    child_calls = [e for e in events if e["type"] == "call_received"
+                   and e["agent_id"] == child["agent_id"]]
+    assert len(child_calls) == 1
+    assert child_calls[0]["parent_call_id"] == child["call_id"]

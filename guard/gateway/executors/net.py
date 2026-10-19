@@ -1,10 +1,9 @@
-"""受控网络执行器：沙箱无网络，所有联网经网关 net.fetch。
-
-httpx 跟随重定向后校验最终目标仍为 http/https（DESIGN.md 第 8 节：
-网络出口检查域名、重定向和最终目标）。信任级别与白名单收紧在 B 阶段策略实现。
-"""
+"""受控网络执行器：每次请求前校验目标，跨域重定向一律拒绝。"""
 
 from __future__ import annotations
+
+import ipaddress
+from urllib.parse import urljoin
 
 import httpx
 
@@ -19,25 +18,37 @@ MAX_REDIRECTS = 5
 class NetExecutor:
     def __init__(self, client: httpx.Client | None = None) -> None:
         self._client = client or httpx.Client(
-            timeout=FETCH_TIMEOUT_S, follow_redirects=True,
+            timeout=FETCH_TIMEOUT_S, follow_redirects=False,
             headers={"User-Agent": "agent-guard-gateway/0.1"},
         )
 
     def fetch(self, url: str) -> tuple[ToolResult, ContentSource | None]:
         try:
-            _host, normalized = normalize_url(url)
+            initial_host, normalized = normalize_url(url)
+            self._check_host(initial_host)
         except UrlError as exc:
             return ToolResult(ok=False, error=f"URL 被拒绝: {exc}"), None
         try:
-            resp = self._client.get(normalized)
+            for _ in range(MAX_REDIRECTS + 1):
+                resp = self._client.get(normalized, follow_redirects=False)
+                if resp.status_code not in {301, 302, 303, 307, 308}:
+                    break
+                location = resp.headers.get("location")
+                if not location:
+                    return ToolResult(ok=False, error="重定向缺少 Location"), None
+                candidate = urljoin(normalized, location)
+                host, target = normalize_url(candidate)
+                self._check_host(host)
+                if host != initial_host:
+                    return ToolResult(ok=False, error="跨域重定向被拒绝"), None
+                normalized = target
+            else:
+                return ToolResult(ok=False, error="重定向次数超限"), None
         except httpx.HTTPError as exc:
             return ToolResult(ok=False, error=f"网络请求失败: {exc}"), None
-        # 重定向后最终目标校验
-        final = str(resp.url)
-        try:
-            normalize_url(final)
         except UrlError as exc:
-            return ToolResult(ok=False, error=f"重定向最终目标被拒绝: {exc}"), None
+            return ToolResult(ok=False, error=f"重定向目标被拒绝: {exc}"), None
+        final = str(resp.url)
         body = resp.text[:MAX_BODY_BYTES]
         source = ContentSource(
             type=SourceType.WEB_PAGE,
@@ -50,3 +61,13 @@ class NetExecutor:
             content_source_id=source.source_id,
         )
         return result, source
+
+    @staticmethod
+    def _check_host(host: str) -> None:
+        """阻断 IP 字面量访问本机、内网及元数据地址；域名解析仍需网络 ACL。"""
+        try:
+            address = ipaddress.ip_address(host.strip("[]"))
+        except ValueError:
+            return
+        if not address.is_global:
+            raise UrlError("不允许访问非公网 IP")

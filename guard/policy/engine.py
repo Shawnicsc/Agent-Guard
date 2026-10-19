@@ -7,14 +7,11 @@
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 
 from guard.contracts import DecisionAction
 from guard.policy.dsl import AndNode, CompiledRule, NotNode, OrNode, Predicate
 from guard.policy.predicates import EvalContext
-
-log = logging.getLogger(__name__)
 
 _SEVERITY = {DecisionAction.ALLOW: 1, DecisionAction.CONFIRM: 2, DecisionAction.BLOCK: 3}
 
@@ -50,9 +47,8 @@ class PolicyEngine:
                 if rule.matches(ctx):
                     matched.append(rule)
             except Exception as exc:
-                # 单条谓词异常视为该规则未命中，记录后继续，不让策略文件缺陷放行
-                log.warning("规则 %s 求值异常（忽略该规则）: %s", rule.id, exc)
-                continue
+                # 调用方会转入降级裁决；不能把异常当成规则未命中。
+                raise RuntimeError(f"规则 {rule.id} 求值失败") from exc
         if not matched:
             return EngineResult(action=self.policy.default_decision)
         # 最高严重度；同级别时保留全部命中

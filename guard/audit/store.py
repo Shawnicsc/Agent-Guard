@@ -280,6 +280,25 @@ class AuditStore:
             "SELECT * FROM events WHERE trace_id = ? ORDER BY event_id", (trace_id,)
         ).fetchall()
 
+    def calls_by_trace(self, trace_id: str) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM calls WHERE trace_id = ? ORDER BY ts, call_id",
+            (trace_id,),
+        ).fetchall()
+
+    def list_traces(self, limit: int = 50) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT trace_id, MIN(session_id) AS session_id, MIN(ts) AS started_at, "
+            "MAX(ts) AS last_event_at, COUNT(*) AS event_count "
+            "FROM events GROUP BY trace_id ORDER BY last_event_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+    def source_by_id(self, source_id: str) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM sources WHERE source_id = ?", (source_id,),
+        ).fetchone()
+
     def get_decision(self, decision_id: str) -> sqlite3.Row | None:
         return self._conn.execute(
             "SELECT * FROM decisions WHERE decision_id = ?", (decision_id,)

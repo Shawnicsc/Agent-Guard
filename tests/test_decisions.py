@@ -52,9 +52,9 @@ def test_no_match_falls_to_default(session):
     assert result.rule_ids == []
 
 
-def test_broken_rule_skipped_not_fatal(session):
-    """单条规则求值异常只跳过该规则，不影响其余规则的裁决。"""
-    # 注入一条非法正则的高优先级 BLOCK 规则，验证它被跳过后不影响放行
+def test_broken_rule_degrades_closed(session):
+    """规则求值异常不能被当作未命中；高风险调用降级拒绝。"""
+    # 用非法正则模拟运行时谓词故障。
     broken = compile_policy_file(settings.policy_file)
     from guard.contracts import DecisionAction as DA
     from guard.policy.dsl import CompiledRule, Predicate
@@ -64,8 +64,11 @@ def test_broken_rule_skipped_not_fatal(session):
         condition=Predicate(name="command_pattern", param="([unclosed"),
     )
     broken.rules = list(broken.rules) + [bad_rule]
-    result = PolicyEngine(broken).decide(_ctx(session, "fs.read", {"path": "x"}))
-    assert result.action == DecisionAction.ALLOW
+    session.policy_engine = PolicyEngine(broken)
+    envelope = session.make_envelope("exec.run", {"command": "ls"})
+    result = session.decide(envelope)
+    assert result.action == DecisionAction.BLOCK
+    assert result.degraded
 
 
 # ---- 会话集成 ----

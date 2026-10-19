@@ -1,0 +1,49 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap');
+
+:root { font-family: 'DM Sans', 'Noto Sans SC', sans-serif; color: #243044; background: #f4f6f8; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+button { font: inherit; }
+.shell { display: grid; grid-template-columns: 278px minmax(0, 1fr); min-height: 100vh; }
+.sidebar { background: #182b3b; color: #e9f1f5; padding: 27px 16px; }
+.brand { font-size: 20px; font-weight: 700; padding: 0 12px 39px; letter-spacing: -.03em; }
+.brand-mark { color: #71d7b1; margin-right: 7px; }
+.eyebrow { font-size: 10px; font-weight: 700; letter-spacing: .15em; text-transform: uppercase; color: #7d99a7; }
+.sidebar > .eyebrow { padding: 0 12px 12px; }
+.trace-card { display: flex; flex-direction: column; gap: 6px; width: 100%; padding: 15px 13px; margin: 3px 0; text-align: left; border: 1px solid transparent; border-radius: 9px; background: transparent; color: #cfdae2; cursor: pointer; }
+.trace-card.active, .trace-card:hover { background: #28445a; border-color: #4a7287; }
+.trace-card strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
+.trace-card span { font-size: 11px; color: #9eb2be; }
+.trace-card code { font-size: 10px; color: #8ca4b2; }
+main { min-width: 0; padding: 27px 34px 44px; }
+.topbar { display: flex; align-items: center; justify-content: space-between; padding-bottom: 23px; }
+h1 { font-size: 25px; margin: 7px 0 0; letter-spacing: -.04em; }
+h2 { font-size: 15px; margin: 0; }
+h3 { font-size: 13px; margin: 15px 0 8px; overflow-wrap: anywhere; }
+.badge { background: #dff4eb; color: #23785b; font-size: 10px; font-weight: 700; letter-spacing: .09em; padding: 8px 10px; border-radius: 4px; }
+.metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 13px; margin-bottom: 15px; }
+.metrics > div, .panel { background: white; border: 1px solid #e2e8ed; border-radius: 10px; box-shadow: 0 4px 16px #24304408; }
+.metrics > div { padding: 17px 20px; display: flex; align-items: baseline; gap: 8px; }
+.metrics strong { font-size: 24px; }
+.metrics span { font-size: 11px; color: #7a8995; }
+.panel-heading { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid #ebeff2; }
+.panel-heading span { font-size: 11px; color: #84919c; }
+.graph { height: 450px; }
+.react-flow__node { width: 168px; padding: 9px 11px; border: 2px solid; border-radius: 8px; background: white; box-shadow: 0 3px 9px #182b3b15; font-size: 11px; text-align: left; overflow-wrap: anywhere; }
+.react-flow__node small { display: block; color: #83919d; font-size: 9px; text-transform: uppercase; margin-bottom: 3px; }
+.react-flow__node span { display: block; font-weight: 700; }
+.react-flow__edge-text { font-size: 9px; }
+.bottom-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(260px, 1fr); gap: 15px; margin-top: 15px; }
+.timeline { max-height: 560px; overflow: auto; padding: 4px 18px; }
+.timeline article { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 12px; padding: 14px 0; border-bottom: 1px solid #edf1f3; }
+.timeline time, .timeline small { font-size: 10px; color: #84919c; }
+.timeline strong { display: block; font-size: 12px; }
+.timeline small { display: block; margin-top: 3px; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #f6f8fa; border-radius: 5px; padding: 10px; font-size: 10px; line-height: 1.5; max-height: 210px; overflow: auto; }
+.details { padding-bottom: 16px; }
+.details > :not(.panel-heading) { margin-left: 20px; margin-right: 20px; }
+.impact { display: flex; flex-direction: column; gap: 4px; border-left: 3px solid #71d7b1; padding: 7px 10px; margin-top: 9px; font-size: 11px; overflow-wrap: anywhere; }
+.impact span, .empty { color: #81909a; font-size: 11px; }
+.empty-state { padding: 90px 20px; text-align: center; color: #8595a0; }
+.error { background: #fff1f1; color: #9a3d49; padding: 12px; border-radius: 6px; margin-bottom: 16px; }
+@media (max-width: 920px) { .shell { grid-template-columns: 1fr; } .sidebar { padding: 15px; } .brand { padding-bottom: 12px; } .trace-card { display: inline-flex; width: 230px; vertical-align: top; } main { padding: 20px; } .bottom-grid { grid-template-columns: 1fr; } }

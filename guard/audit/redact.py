@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 _REDACT_PATTERNS: list[tuple[str, str]] = [
     (r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
@@ -38,9 +39,19 @@ def redact_payload(payload: Any) -> Any:
         return {
             k: "[REDACTED:SECRET]"
             if isinstance(v, str) and _SENSITIVE_KEY_RE.search(str(k))
+            else redact_url(v)
+            if isinstance(v, str) and str(k).lower() in {"url", "uri"}
             else redact_payload(v)
             for k, v in payload.items()
         }
     if isinstance(payload, list):
         return [redact_payload(v) for v in payload]
     return payload
+
+
+def redact_url(value: str) -> str:
+    """普通审计视图保留目的主机，隐藏可能承载密钥的路径与查询。"""
+    parsed = urlsplit(value)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        return redact_text(f"{parsed.scheme}://{parsed.netloc}/[REDACTED:PATH]")
+    return redact_text(value)
