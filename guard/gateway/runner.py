@@ -145,12 +145,12 @@ class SandboxRunner:
         })
 
     def _on_tool_call(self, proc: subprocess.Popen, msg: dict) -> int:
-        """返回 1 表示该调用被拒绝，用于场景断言。"""
+        """返回 1 表示该调用被拒绝（BLOCK 或待确认未执行）。"""
         request_id = msg.get("request_id", "")
         tool = msg.get("tool", "")
         arguments = msg.get("arguments", {}) or {}
         record = {"tool": tool, "arguments": arguments, "status": "BLOCK", "ok": False,
-                  "error": ""}
+                  "error": "", "decision": None}
         self.call_log.append(record)
         try:
             envelope = self.session.make_envelope(tool, arguments)
@@ -162,22 +162,17 @@ class SandboxRunner:
             })
             return 1
         decision = self.session.decide(envelope)
-        if decision.action.value == "ALLOW":
-            result, _source = self.session.execute(envelope)
-            record.update(status="ALLOW", ok=result.ok, error=result.error)
-            self._send(proc, {
-                "type": "tool_result", "request_id": request_id,
-                "status": "ALLOW", "ok": result.ok,
-                "output": result.output, "error": result.error,
-            })
-            return 0
-        record["error"] = decision.reason
+        record["decision"] = decision
+        result, _source = self.session.try_execute(envelope, decision)
+        refused = not (decision.action.value == "ALLOW" and result.ok)
+        record.update(status=decision.action.value, ok=result.ok, error=result.error)
         self._send(proc, {
             "type": "tool_result", "request_id": request_id,
-            "status": decision.action.value, "ok": False,
-            "reason": decision.reason,
+            "status": decision.action.value, "ok": result.ok,
+            "output": result.output, "error": result.error,
+            "reason": decision.reason, "approval_id": decision.approval_id,
         })
-        return 1
+        return 1 if refused else 0
 
     # ---- 管道 ----
 

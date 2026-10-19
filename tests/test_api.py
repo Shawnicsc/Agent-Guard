@@ -66,3 +66,70 @@ def test_decide_unregistered_tool(tmp_path, monkeypatch):
     })
     # 网关构造 envelope 时即拒绝未注册工具（400）
     assert resp.status_code == 400
+
+
+def _make_session(client, user_id="u1", goal="整理文档"):
+    resp = client.post("/sessions", json={"user_id": user_id, "goal": goal})
+    assert resp.status_code == 200
+    return resp.json()["session_id"]
+
+
+def test_approval_route_flow(tmp_path, monkeypatch):
+    """HTTP 确认闭环：CONFIRM 产生 approval_id -> 批准 -> 重试放行。"""
+    client = make_client(tmp_path, monkeypatch)
+    session_id = _make_session(client)
+    args = {"path": "notes.txt", "content": "hi"}
+
+    first = client.post("/tool-calls/decide", json={
+        "session_id": session_id, "tool": "fs.write", "arguments": args,
+    }).json()
+    assert first["action"] == "CONFIRM" and first["approval_id"]
+
+    # 404：不存在的批准记录
+    assert client.post("/approvals/appr-missing",
+                       json={"user_id": "u1", "approve": True}).status_code == 404
+    # 403：非发起用户
+    assert client.post(f"/approvals/{first['approval_id']}",
+                       json={"user_id": "attacker", "approve": True}).status_code == 403
+    # 本人批准
+    ok = client.post(f"/approvals/{first['approval_id']}",
+                     json={"user_id": "u1", "approve": True})
+    assert ok.status_code == 200 and ok.json()["status"] == "approved"
+
+    second = client.post("/tool-calls/decide", json={
+        "session_id": session_id, "tool": "fs.write", "arguments": args,
+    }).json()
+    assert second["action"] == "ALLOW"
+    assert "approved_call" in second["rule_ids"]
+
+
+def test_policies_route(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    resp = client.get("/policies")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["version"] == "b1"
+    ids = {r["id"] for r in body["rules"]}
+    assert "deny_secret_exfiltration" in ids
+    assert "pypi.org" in body["trusted_domains"]
+    # 高优先级在前
+    priorities = [r["priority"] for r in body["rules"]]
+    assert priorities == sorted(priorities, reverse=True)
+
+
+def test_policies_validate_route(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    ok = client.post("/policies/validate", json={
+        "content": "version: v\nrules:\n  - id: r\n    priority: 1\n"
+                   "    when: {action_is: fs.read}\n    decision: BLOCK\n",
+    })
+    assert ok.json()["valid"] is True
+
+    bad = client.post("/policies/validate", json={
+        "content": "version: v\nrules:\n  - id: r\n    priority: 1\n"
+                   "    when: {evil_eval: x}\n    decision: BLOCK\n",
+    })
+    body = bad.json()
+    assert body["valid"] is False and "未注册的谓词" in body["error"]
+    # 校验不影响当前生效版本
+    assert client.get("/policies").json()["version"] == "b1"

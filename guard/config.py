@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     workspaces_root: Path = PROJECT_ROOT / "workspaces"
     # 演示 Agent 代码目录（挂载进沙箱，只读）
     demo_agent_dir: Path = PROJECT_ROOT / "examples" / "demo_agent"
+    # 策略文件
+    policy_file: Path = PROJECT_ROOT / "policies" / "default.yaml"
 
 
 settings = Settings()

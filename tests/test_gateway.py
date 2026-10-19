@@ -1,11 +1,11 @@
-"""网关核心测试：决策桩、执行器路由、审计落库（无 Docker / 无 LLM 依赖）。"""
+"""网关核心测试：策略裁决、执行器路由、审计落库（无 Docker / 无 LLM 依赖）。"""
 
 from __future__ import annotations
 
 import respx
 from httpx import Response
 
-from guard.contracts import DecisionAction
+from guard.contracts import DecisionAction, SemanticFacts, TaskRelation
 from guard.gateway.registry import all_tools, openai_tools
 
 
@@ -58,6 +58,8 @@ def test_make_envelope_rejects_out_of_capability(session):
 
 
 def test_fs_write_then_read(session):
+    # 语义研判为 aligned 时普通写入不再需要确认（B 阶段策略引擎接入）
+    session.semantic_facts = SemanticFacts(task_relation=TaskRelation.ALIGNED)
     w = session.make_envelope("fs.write", {"path": "notes/a.txt", "content": "hello"})
     assert session.decide(w).action == DecisionAction.ALLOW
     result, _ = session.execute(w)
@@ -68,10 +70,22 @@ def test_fs_write_then_read(session):
     assert source is not None and source.type.value == "file"
 
 
+def test_fs_write_unaligned_needs_confirmation(session):
+    """语义关系未知（facts 缺失）-> confirm_unplanned_write 命中。"""
+    w = session.make_envelope("fs.write", {"path": "notes/a.txt", "content": "hello"})
+    decision = session.decide(w)
+    assert decision.action == DecisionAction.CONFIRM
+    assert "confirm_unplanned_write" in decision.rule_ids
+    assert decision.approval_id
+    result, _ = session.try_execute(w, decision)
+    assert not result.ok  # 未批准不执行
+
+
 def test_fs_read_host_credential_refused(session):
     envelope = session.make_envelope("fs.read", {"path": "~/.ssh/id_rsa"})
     decision = session.decide(envelope)
-    assert decision.action == DecisionAction.ALLOW  # 桩放行，由执行器硬边界拒绝
+    # 读类工具无硬规则命中 -> 放行，由执行器路径解析硬边界拒绝
+    assert decision.action == DecisionAction.ALLOW
     result, _ = session.execute(envelope)
     assert not result.ok
     assert "路径被拒绝" in result.error
@@ -121,7 +135,8 @@ def test_session_trace_shared(session):
 
 def test_registry_consistency():
     tools = all_tools()
-    assert set(tools) == {"fs.read", "fs.write", "net.fetch", "exec.run"}
+    assert set(tools) == {"fs.read", "fs.write", "net.fetch", "exec.run",
+                          "git.push", "agent.spawn"}
     openai_defs = openai_tools()
     assert {t["function"]["name"] for t in openai_defs} == set(tools)
     assert all(t["function"]["parameters"]["type"] == "object" for t in openai_defs)

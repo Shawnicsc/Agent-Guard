@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-ExecutorKey = Literal["fs", "net", "exec"]
+ExecutorKey = Literal["fs", "net", "exec", "git", "subagent"]
 
 
 class ToolSpec(BaseModel):
@@ -109,3 +109,37 @@ def openai_tools() -> list[dict[str, Any]]:
         }
         for spec in _TOOLS.values()
     ]
+
+_register(ToolSpec(
+    name="git.push",
+    executor="git",
+    read_only=False,
+    description="通过受控执行器把工作区仓库推送到远程（必须由任务授权）",
+    parameters={
+        "type": "object",
+        "properties": {
+            "remote": {"type": "string", "description": "远程名或 URL"},
+            "branch": {"type": "string", "description": "要推送的分支"},
+        },
+        "required": ["remote", "branch"],
+    },
+))
+
+_register(ToolSpec(
+    name="agent.spawn",
+    executor="subagent",
+    read_only=False,
+    description="派发一个子 Agent；可用能力只能是父任务能力的子集，"
+                "由网关签发，不接受声明",
+    parameters={
+        "type": "object",
+        "properties": {
+            "task": {"type": "string", "description": "交给子 Agent 的任务描述"},
+            "capabilities": {
+                "type": "array", "items": {"type": "string"},
+                "description": "申请的能力清单（必须是当前能力子集）",
+            },
+        },
+        "required": ["task"],
+    },
+))

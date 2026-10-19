@@ -1,7 +1,7 @@
 """对外接口（DESIGN.md 第 10 节）。
 
-阶段 A 交付：POST /sessions、POST /tool-calls/decide（桩决策）、GET /health。
-阶段 B 追加 /approvals、/policies；阶段 D 追加 /incidents。
+阶段 A 交付：POST /sessions、POST /tool-calls/decide、GET /health。
+阶段 B 追加 /approvals/{id}、GET /policies、POST /policies/validate；阶段 D 追加 /incidents。
 """
 
 from __future__ import annotations
@@ -14,6 +14,8 @@ from pydantic import BaseModel, Field
 from guard.config import settings
 from guard.contracts import Decision
 from guard.gateway.session import MAIN_AGENT_ID, GatewaySession
+from guard.policy.approval import decide_approval
+from guard.policy.dsl import compile_policy_text
 
 router = APIRouter()
 
@@ -54,6 +56,7 @@ def create_session(body: CreateSessionBody, request: Request) -> dict:
         user_id=body.user_id,
         goal=body.goal,
         goal_category=body.goal_category,
+        policy_engine=request.app.state.sessions_engine,
         allowed_resources=body.allowed_resources or None,
         allowed_actions=body.allowed_actions or None,
         allow_exfiltration=body.allow_exfiltration,
@@ -78,3 +81,56 @@ def decide_tool_call(body: DecideBody, request: Request) -> Decision:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return session.decide(envelope)
+
+
+class ApprovalBody(BaseModel):
+    user_id: str
+    approve: bool
+
+
+@router.post("/approvals/{approval_id}")
+def resolve_approval(approval_id: str, body: ApprovalBody, request: Request) -> dict:
+    """独立确认入口：已认证用户批准或拒绝与参数摘要绑定的调用。"""
+    try:
+        record = decide_approval(request.app.state.store, approval_id,
+                                 body.user_id, body.approve)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"批准记录不存在: {approval_id}")
+    return {
+        "approval_id": record.approval_id, "call_id": record.call_id,
+        "status": record.status, "expired": record.expired,
+    }
+
+
+@router.get("/policies")
+def get_policy(request: Request) -> dict:
+    engine = request.app.state.sessions_engine  # 延后注入见 create_app
+    return _policy_summary(engine)
+
+
+@router.post("/policies/validate")
+def validate_policy(body: dict, request: Request) -> dict:
+    """校验策略文本；返回编译结果或错误，不改变当前生效版本。"""
+    content = body.get("content", "")
+    try:
+        compiled = compile_policy_text(content)
+        return {"valid": True, "version": compiled.version,
+                "rules": [r.id for r in compiled.rules]}
+    except Exception as exc:  # PolicyError 与 pydantic 校验错误一并返回
+        return {"valid": False, "error": str(exc)}
+
+
+def _policy_summary(engine) -> dict:
+    policy = engine.policy
+    return {
+        "version": policy.version,
+        "trusted_domains": sorted(policy.trusted_domains),
+        "default_decision": policy.default_decision.value,
+        "rules": [
+            {"id": r.id, "priority": r.priority, "decision": r.decision.value,
+             "reason": r.reason}
+            for r in sorted(policy.rules, key=lambda x: -x.priority)
+        ],
+    }

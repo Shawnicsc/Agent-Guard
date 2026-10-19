@@ -27,6 +27,7 @@ from guard.gateway.runner import SandboxRunner  # noqa: E402
 from guard.gateway.session import GatewaySession  # noqa: E402
 from guard.llm.client import LLMClient  # noqa: E402
 from guard.llm.config import load_providers, resolve_provider  # noqa: E402
+from guard.policy.approval import decide_approval  # noqa: E402
 from guard.sandbox.spec import SandboxSpec  # noqa: E402
 
 
@@ -38,6 +39,14 @@ def seed_workspace(workspace_root: Path, seed_files: dict[str, str]) -> None:
         dest = workspace_root / dest_rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, dest)
+
+
+def seed_content(workspace_root: Path, contents: dict[str, str]) -> None:
+    """直接以 {相对路径: 文本内容} 预置工作区文件（b 场景植入密钥样本用）。"""
+    for rel, content in (contents or {}).items():
+        dest = workspace_root / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(content, encoding="utf-8")
 
 
 def check_expectations(scenario: dict, run_summary: dict, call_log: list[dict]) -> list[str]:
@@ -81,6 +90,138 @@ def check_expectations(scenario: dict, run_summary: dict, call_log: list[dict]) 
     return failures
 
 
+def _assert_call(call: dict, entry: dict) -> list[str]:
+    """单条 direct 调用的断言：期望决策、命中规则、是否实际执行。"""
+    failures: list[str] = []
+    decision = call.get("decision")
+    action = decision.action.value if decision is not None else call.get("status")
+    expect_action = entry.get("expect_decision")
+    if expect_action and action != expect_action:
+        failures.append(
+            f"{entry['tool']} 期望决策 {expect_action}，实际 {action}"
+            f"（rule_ids={decision.rule_ids if decision else None}，"
+            f"reason={decision.reason[:120] if decision else None}）"
+        )
+        return failures
+    expect_rules = entry.get("expect_rules")
+    if expect_rules and decision is not None:
+        missing = [r for r in expect_rules if r not in (decision.rule_ids or [])]
+        if missing:
+            failures.append(f"{entry['tool']} 期望命中规则 {missing}，"
+                            f"实际 rule_ids={decision.rule_ids}")
+    if entry.get("expect_executed") is True and not call.get("ok"):
+        failures.append(f"{entry['tool']} 期望实际执行成功，实际 ok={call.get('ok')} "
+                        f"error={call.get('error')}")
+    if entry.get("expect_executed") is False and call.get("executed"):
+        failures.append(f"{entry['tool']} 期望未实际执行，但执行器已运行")
+    return failures
+
+
+def run_direct_scenario(scenario: dict, store: AuditStore) -> int:
+    """direct 模式：不经 LLM 与 Docker，直接断言网关裁决（确定性验收）。
+
+    每条 call 结构：
+      {tool, arguments, expect_decision: BLOCK|CONFIRM|ALLOW,
+       expect_rules: [rule_id], expect_executed: bool}
+    pre_read 可先执行读取以加载污点标签（exact_bytes）。
+    """
+    mission = scenario["mission"]
+    session = GatewaySession.create(
+        store, settings.workspaces_root,
+        user_id="demo-user",
+        goal=mission["goal"],
+        goal_category=mission.get("goal_category", "general"),
+        allow_exfiltration=mission.get("allow_exfiltration", False),
+        allow_push=mission.get("allow_push", False),
+    )
+    seed_workspace(session.workspace_root, scenario.get("seed_files"))
+    seed_content(session.workspace_root, scenario.get("seed_content"))
+
+    call_log: list[dict] = []
+    failures: list[str] = []
+    approval_ids: dict[str, str] = {}  # entry id -> approval_id
+    last_approval_id: str | None = None
+    entries = (scenario.get("pre_read") or []) + (scenario.get("calls") or [])
+    for entry in entries:
+        # 批准步骤：{"approve": <entry-id|last>, "user": ..., "accept": bool}
+        if "approve" in entry:
+            ref = entry["approve"]
+            approval_id = last_approval_id if ref == "last" else approval_ids.get(ref)
+            if approval_id is None:
+                failures.append(f"批准步骤引用不存在的调用: {ref!r}")
+                continue
+            try:
+                record = decide_approval(store, approval_id,
+                                         entry.get("user", mission.get("user_id", "demo-user")),
+                                         entry.get("accept", True))
+            except PermissionError as exc:
+                if entry.get("expect_status") != "forbidden":
+                    failures.append(f"批准步骤意外被拒: {exc}")
+                continue
+            if record is None:
+                failures.append(f"批准记录不存在: {approval_id}")
+                continue
+            expect_status = entry.get("expect_status")
+            if expect_status and record.status != expect_status:
+                failures.append(f"批准 {approval_id[:12]}… 期望状态 {expect_status}，"
+                                f"实际 {record.status}")
+            continue
+
+        record = {"tool": entry["tool"], "arguments": entry["arguments"],
+                  "status": "BLOCK", "ok": False, "error": "", "decision": None,
+                  "executed": False}
+        call_log.append(record)
+        try:
+            envelope = session.make_envelope(entry["tool"], entry["arguments"])
+        except ValueError as exc:
+            if entry.get("expect_decision") == "BLOCK":
+                record["error"] = str(exc)
+                failures.extend(_assert_call(record, entry))
+                continue
+            failures.append(f"{entry['tool']} 调用构造意外失败: {exc}")
+            continue
+        decision = session.decide(envelope)
+        record["decision"] = decision
+        record["status"] = decision.action.value
+        if decision.approval_id:
+            last_approval_id = decision.approval_id
+            if entry.get("id"):
+                approval_ids[entry["id"]] = decision.approval_id
+        result, _source = session.try_execute(envelope, decision)
+        record["ok"] = result.ok
+        record["error"] = result.error
+        # try_execute 对 ALLOW/有效批准才进入执行器；用它近似 executed
+        record["executed"] = result.ok or (
+            decision.action.value == "ALLOW" and not result.error
+        ) or ("已批准" in (decision.reason or ""))
+        failures.extend(_assert_call(record, entry))
+
+    print(f"[{scenario['id']}] direct 调用记录:")
+    for call in call_log:
+        dec = call.get("decision")
+        print(f"  {call['tool']} {str(call['arguments'])[:120]} "
+              f"-> {call['status']} ok={call.get('ok')} "
+              f"rules={dec.rule_ids if dec else None}")
+
+    # 审计完整性：每条调用都有 CALL_RECEIVED + DECISION_MADE
+    events = store.events_by_trace(session.trace_id)
+    for call in call_log:
+        dec = call.get("decision")
+        if dec is None:
+            continue
+        types = [row["type"] for row in events if row["call_id"] == dec.call_id]
+        if "call_received" not in types or "decision_made" not in types:
+            failures.append(f"{call['tool']} 审计不完整（call/decision 事件缺失）: {types}")
+
+    if failures:
+        print(f"[{scenario['id']}] 验收失败:")
+        for f in failures:
+            print(f"  - {f}")
+        return 1
+    print(f"[{scenario['id']}] 验收通过")
+    return 0
+
+
 def run_scenario(scenario_path: Path, store: AuditStore | None = None) -> int:
     scenario = yaml.safe_load(scenario_path.read_text())
     mission = scenario["mission"]
@@ -88,6 +229,12 @@ def run_scenario(scenario_path: Path, store: AuditStore | None = None) -> int:
     own_store = store is None
     if own_store:
         store = AuditStore(settings.db_path)
+
+    if scenario.get("mode") == "direct":
+        rc = run_direct_scenario(scenario, store)
+        if own_store:
+            store.close()
+        return rc
 
     session = GatewaySession.create(
         store,

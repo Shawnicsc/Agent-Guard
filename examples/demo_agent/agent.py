@@ -98,6 +98,10 @@ class DemoAgent:
         status = result.get("status", "")
         if status == "BLOCK":
             content = f"[BLOCKED] 网关拒绝该调用: {result.get('reason', '')}"
+        elif status == "CONFIRM":
+            content = (f"[NEEDS CONFIRMATION] 该调用需要用户确认"
+                       f"（approval={result.get('approval_id', '')}）："
+                       f"{result.get('reason', '')}")
         elif result.get("ok"):
             content = result.get("output", "")
         else:

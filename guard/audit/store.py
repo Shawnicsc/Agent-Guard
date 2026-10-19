@@ -12,6 +12,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from guard.audit.redact import redact_payload
 from guard.contracts import (
     AuditEvent,
     ContentSource,
@@ -205,12 +206,50 @@ class AuditStore:
                  event.call_id, event.parent_call_id, event.agent_id, event.source_id,
                  event.decision_id, json.dumps(event.payload, ensure_ascii=False),
                  json.dumps(event.redacted_payload, ensure_ascii=False)
-                 if event.redacted_payload is not None else None),
+                 if event.redacted_payload is not None
+                 else json.dumps(redact_payload(event.payload), ensure_ascii=False)),
             )
             self._conn.commit()
             return cur.lastrowid
 
     # ---- 查询（D 阶段溯源基础，A 阶段先提供最小查询）----
+
+    def save_approval(self, record) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO approvals VALUES (?,?,?,?,?,?,?,?)",
+                record.to_row(),
+            )
+            self._conn.commit()
+
+    def update_approval(self, record) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE approvals SET status = ? WHERE approval_id = ?",
+                (record.status, record.approval_id),
+            )
+            self._conn.commit()
+
+    def get_approval(self, approval_id: str):
+        row = self._conn.execute(
+            "SELECT * FROM approvals WHERE approval_id = ?", (approval_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_approval(row)
+
+    def approvals_for_call(self, call_id: str) -> list:
+        rows = self._conn.execute(
+            "SELECT * FROM approvals WHERE call_id = ?", (call_id,)
+        ).fetchall()
+        return [_row_to_approval(row) for row in rows]
+
+    def approvals_for_hash(self, arguments_hash: str) -> list:
+        rows = self._conn.execute(
+            "SELECT * FROM approvals WHERE arguments_hash = ? "
+            "ORDER BY created_at DESC", (arguments_hash,)
+        ).fetchall()
+        return [_row_to_approval(row) for row in rows]
 
     def events_by_trace(self, trace_id: str) -> list[sqlite3.Row]:
         return self._conn.execute(
@@ -221,3 +260,19 @@ class AuditStore:
         return self._conn.execute(
             "SELECT * FROM decisions WHERE decision_id = ?", (decision_id,)
         ).fetchone()
+
+
+def _row_to_approval(row: sqlite3.Row):
+    from datetime import datetime
+
+    from guard.policy.approval import ApprovalRecord
+
+    record = ApprovalRecord(
+        approval_id=row["approval_id"], call_id=row["call_id"],
+        arguments_hash=row["arguments_hash"], target=row["target"],
+        user_id=row["user_id"],
+    )
+    record.status = row["status"]
+    record.created_at = datetime.fromisoformat(row["created_at"])
+    record.expires_at = datetime.fromisoformat(row["expires_at"])
+    return record

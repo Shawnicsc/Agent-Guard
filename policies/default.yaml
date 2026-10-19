@@ -1,0 +1,101 @@
+# 首批硬规则（DESIGN.md 第 6 节）：覆盖赛题能力 3 的五类管控。
+# 规则按 priority 降序评估；同一调用命中多条时 BLOCK > CONFIRM > ALLOW。
+version: b1
+
+# 信任域名白名单：不在此列且非本地的出站目标均视为 external
+trusted_domains:
+  - pypi.org
+  - huggingface.co
+
+default_decision: ALLOW
+
+rules:
+  # ---- 一类：敏感路径写入 ----
+  - id: deny_sensitive_write
+    priority: 100
+    when:
+      all:
+        - action_is: fs.write
+        - path_under:
+            - "~/.ssh/*"
+            - "~/.aws/*"
+            - "~/.gnupg/*"
+            - "/etc/cron*"
+            - "/etc/systemd/system/*"
+            - "/etc/init.d/*"
+            - "/root/*"
+    decision: BLOCK
+    reason: 禁止向 SSH/云凭据、计划任务与自启动目录等敏感路径写入
+
+  # ---- 二类：读取密钥后向非信任域外发 ----
+  - id: deny_secret_exfiltration
+    priority: 100
+    when:
+      all:
+        - action_is: net.fetch
+        - destination_trust: external
+        - payload_has_label: [secret, credential]
+    decision: BLOCK
+    reason: 当前会话读取的敏感内容不得发往非信任目的地
+
+  # ---- 三类：危险命令模式（规范化后有界解码再匹配）----
+  - id: deny_dangerous_command
+    priority: 100
+    when:
+      all:
+        - action_is: exec.run
+        - any:
+            - command_pattern: "\\bcurl\\b[^;|&]*(?:\\||;|&&)"
+            - command_pattern: "\\bwget\\b[^;|&]*(?:\\||;|&&)"
+            - command_pattern: "(?:base64|openssl enc)[^|]*\\|\\s*(?:sh|bash)"
+            - command_pattern: "rm\\s+-rf\\s+/(?:\\s|$)"
+    decision: BLOCK
+    reason: 禁止远程下载管道执行、解码后执行等危险命令模式
+
+  # ---- 四类：代码检视任务禁止推送 / 未授权推送 ----
+  - id: deny_review_push
+    priority: 95
+    when:
+      all:
+        - action_is: git.push
+        - mission_goal_is: code_review
+    decision: BLOCK
+    reason: 代码检视任务未授权推送
+
+  - id: deny_unauthorized_push
+    priority: 95
+    when:
+      all:
+        - action_is: git.push
+        - not: {mission_flag: allow_push}
+    decision: BLOCK
+    reason: 任务未授权 git.push
+
+  # ---- 五类：向子 Agent 传递密钥 / 能力越权派发 ----
+  - id: deny_subagent_secret
+    priority: 100
+    when:
+      all:
+        - action_is: agent.spawn
+        - payload_has_label: [secret, credential]
+    decision: BLOCK
+    reason: 禁止向子 Agent 传递当前会话中的密钥或凭证
+
+  - id: deny_capability_escalation
+    priority: 95
+    when:
+      all:
+        - action_is: agent.spawn
+        - agent_capability_subset: false
+    decision: BLOCK
+    reason: 子 Agent 可用能力必须是父任务能力的子集，由网关签发
+
+  # ---- 需确认：写入目标与任务语义关系不明确 ----
+  - id: confirm_unplanned_write
+    priority: 40
+    when:
+      all:
+        - action_is: fs.write
+        - semantic_task_relation: uncertain
+    decision: CONFIRM
+    reason: 写入目标与原始任务的关系不明确，需用户确认
