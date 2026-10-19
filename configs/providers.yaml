@@ -1,0 +1,24 @@
+# LLM provider 配置：本地 llama.cpp 与远程 Ark 统一走 OpenAI chat completions 协议。
+# 客户端零差别；AGENT_GUARD_PROVIDER 环境变量可覆盖 default。
+default: local
+
+providers:
+  ark:
+    transport: openai
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+    model: ""            # 部署时填入 arkcli 查到的 endpoint/model id
+    api_key_env: ARK_API_KEY
+    timeout_s: 60
+    max_retries: 2
+
+  local:
+    transport: openai
+    base_url: http://127.0.0.1:8080/v1
+    model: qwen3-4b-q4_k_m
+    api_key_env: null     # llama.cpp server 不校验鉴权
+    timeout_s: 120        # CPU 兜底时推理更慢
+    max_retries: 2
+    # Qwen3 关闭思考模式以降低延迟（llama.cpp chat_template_kwargs）
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false

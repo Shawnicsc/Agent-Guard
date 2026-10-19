@@ -1,0 +1,32 @@
+# databases / runtime artifacts
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+workspaces/
+
+# model weights & tools
+models/
+third_party/llama.cpp/
+
+# secrets
+.env
+*.key
+
+# python
+__pypycache__/
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# node
+node_modules/
+console/dist/
+
+# uv
+# uv.lock is committed for reproducible builds
+
+# llama.cpp prebuilt binaries
+third_party/
