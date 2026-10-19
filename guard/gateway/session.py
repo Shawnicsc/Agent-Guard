@@ -28,8 +28,11 @@ from guard.contracts import (
     MissionSpec,
     PropagationBasis,
     SemanticFacts,
+    SourceType,
     ToolCallEnvelope,
     ToolResult,
+    TrustLevel,
+    content_hash,
     new_id,
     new_trace_id,
 )
@@ -37,15 +40,20 @@ from guard.gateway.envelope import build_envelope
 from guard.gateway.executors.exec import ExecExecutor
 from guard.gateway.executors.fs import FsExecutor
 from guard.gateway.executors.git import GitExecutor
+from guard.gateway.executors.memory import MemoryExecutor
 from guard.gateway.executors.net import NetExecutor
 from guard.gateway.executors.subagent import SubagentExecutor
 from guard.gateway.normalize import PathResolver
 from guard.gateway.registry import all_tools, get_tool
+from guard.mcp_proxy import StdioMCPProxy
 from guard.policy.approval import create_approval, valid_approval
 from guard.policy.dsl import compile_policy_file
 from guard.policy.engine import PolicyEngine
 from guard.policy.predicates import EvalContext
-from guard.taint.labels import LabelTracker
+from guard.semantic.analyzer import SemanticAnalyzer
+from guard.taint.detectors import detect_injection
+from guard.taint.labels import string_values
+from guard.taint.propagate import PropagationEngine
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +74,8 @@ class GatewaySession:
         container_name: str | None = None,
         trace_id: str | None = None,
         policy_engine: PolicyEngine | None = None,
+        semantic_analyzer: SemanticAnalyzer | None = None,
+        mcp_proxy: StdioMCPProxy | None = None,
     ) -> None:
         self.store = store
         self.mission = mission
@@ -76,9 +86,13 @@ class GatewaySession:
         self.fs = FsExecutor(self.resolver)
         self.net = NetExecutor()
         self.git = GitExecutor(workspace_root)
+        self.memory = MemoryExecutor(store, mission.user_id, mission.session_id)
         self.subagent = SubagentExecutor(self)
         self.exec = ExecExecutor(container_name) if container_name else None
-        self.taint = LabelTracker()
+        self.taint = PropagationEngine()
+        self.recent_sources: list[tuple[ContentSource, str]] = []
+        self.semantic_analyzer = semantic_analyzer
+        self.mcp_proxy = mcp_proxy
         # 语义研判结果；C 阶段由 analyzer 写入，缺失时按 uncertain 保守处理
         self.semantic_facts: SemanticFacts | None = None
         if policy_engine is None:
@@ -101,6 +115,8 @@ class GatewaySession:
         allow_exfiltration: bool = False,
         allow_push: bool = False,
         policy_engine: PolicyEngine | None = None,
+        semantic_analyzer: SemanticAnalyzer | None = None,
+        mcp_proxy: StdioMCPProxy | None = None,
     ) -> GatewaySession:
         session_id = new_id("sess")
         trace_id = new_trace_id()
@@ -126,8 +142,31 @@ class GatewaySession:
             trace_id=trace_id, type=EventType.MISSION_FROZEN,
             session_id=session_id, payload={"goal": goal, "version": mission.version},
         ))
-        return cls(store, mission, workspace_root, trace_id=trace_id,
-                  policy_engine=policy_engine)
+        session = cls(store, mission, workspace_root, trace_id=trace_id,
+                      policy_engine=policy_engine, semantic_analyzer=semantic_analyzer,
+                      mcp_proxy=mcp_proxy)
+        direct_hits = detect_injection(goal)
+        if direct_hits:
+            source = ContentSource(
+                type=SourceType.USER_MESSAGE, trust_level=TrustLevel.USER,
+                uri=f"user://{user_id}/{session_id}",
+                content_hash=content_hash(goal),
+            )
+            store.save_source(source)
+            session.recent_sources.append((source, goal))
+            store.save_data_label(DataLabel(
+                source_id=source.source_id, field_path="$.goal",
+                labels={DataLabelName.UNTRUSTED_INSTRUCTION},
+                propagation_basis=PropagationBasis.EXACT_BYTES,
+            ))
+            store.append_event(AuditEvent(
+                trace_id=trace_id, type=EventType.SOURCE_RECORDED,
+                session_id=session_id, source_id=source.source_id,
+                payload={"type": source.type.value, "uri": source.uri,
+                         "content_hash": source.content_hash,
+                         "injection_quotes": [quote for quote, _ in direct_hits][:5]},
+            ))
+        return session
 
     # ---- 调用链 ----
 
@@ -175,15 +214,38 @@ class GatewaySession:
         return decision
 
     def _decide_with_policy(self, envelope: ToolCallEnvelope, spec) -> Decision:
-        carried_labels = self.taint.labels_in(envelope.arguments)
+        carried_labels = set(self.taint.exact_labels(envelope.arguments))
+        carried_labels.update(label for label, _, _ in
+                              self.taint.substring_hits(envelope.arguments))
+        suspected_labels = frozenset(hit.label for hit in
+                                     self.taint.infer_hits(envelope.arguments))
+        if any(detect_injection(text) for text in string_values(envelope.arguments)):
+            carried_labels.add(DataLabelName.UNTRUSTED_INSTRUCTION)
         ctx = EvalContext(
             envelope=envelope, mission=self.mission,
-            carried_labels=carried_labels,
+            carried_labels=frozenset(carried_labels),
+            suspected_labels=suspected_labels,
             semantic_facts=self.semantic_facts,
             trusted_domains=frozenset(self.policy_engine.policy.trusted_domains),
         )
         try:
             result = self.policy_engine.decide(ctx)
+            # 硬规则先行，语义模型无权覆盖禁令。近期来源只由网关执行结果写入。
+            if result.action != DecisionAction.BLOCK and self.semantic_analyzer \
+                    and self.recent_sources:
+                analysis = self.semantic_analyzer.analyze(
+                    self.mission, envelope, self.recent_sources)
+                if analysis.facts is None:
+                    return self._degraded_decision(envelope, spec)
+                ctx.semantic_facts = analysis.facts
+                self.store.append_event(AuditEvent(
+                    trace_id=envelope.trace_id, type=EventType.SEMANTIC_ANALYZED,
+                    session_id=envelope.session_id, call_id=envelope.call_id,
+                    agent_id=envelope.agent_id,
+                    payload={"facts": analysis.facts.model_dump(mode="json"),
+                             "sources": analysis.sources_used, "cached": analysis.cached},
+                ))
+                result = self.policy_engine.decide(ctx)
         except Exception as exc:
             log.warning("策略引擎异常，走降级路径: %s", exc)
             return self._degraded_decision(envelope, spec)
@@ -201,7 +263,8 @@ class GatewaySession:
         if result.action == DecisionAction.CONFIRM:
             # 已批准的精确调用：工具+参数一致且未过期 -> 放行（重试新 call_id 亦有效）
             approved = valid_approval(self.store, envelope.tool,
-                                      envelope.arguments_hash, self.mission.user_id)
+                                      envelope.arguments_hash, self.mission.user_id,
+                                      envelope.session_id)
             if approved is not None:
                 return Decision(
                     call_id=envelope.call_id, action=DecisionAction.ALLOW,
@@ -265,6 +328,12 @@ class GatewaySession:
                 result = ToolResult(ok=False, error="任务沙箱未启动")
             else:
                 result = self.exec.run(envelope.arguments.get("command", ""))
+            if result.ok and result.output:
+                source = ContentSource(
+                    type=SourceType.TOOL_RESULT,
+                    uri=f"sandbox://{envelope.call_id}/stdout",
+                    content_hash=content_hash(result.output),
+                )
         elif envelope.tool == "git.push":
             result = self.git.push(envelope.arguments.get("remote", ""),
                                    envelope.arguments.get("branch", ""))
@@ -273,10 +342,61 @@ class GatewaySession:
                 envelope.arguments.get("task", ""),
                 envelope.arguments.get("capabilities") or [],
             )
+        elif envelope.tool == "memory.write":
+            result, source = self.memory.write(
+                envelope.arguments.get("key", ""),
+                envelope.arguments.get("content", ""),
+            )
+        elif envelope.tool == "memory.read":
+            result, source = self.memory.read(envelope.arguments.get("key", ""))
+        elif envelope.tool == "mcp.list":
+            if self.mcp_proxy is None:
+                result = ToolResult(ok=False, error="未配置 MCP 代理")
+            else:
+                result, source = self.mcp_proxy.list_tools(
+                    envelope.arguments.get("server", ""))
+        elif envelope.tool == "mcp.call":
+            if self.mcp_proxy is None:
+                result = ToolResult(ok=False, error="未配置 MCP 代理")
+            else:
+                result, source = self.mcp_proxy.call(
+                    envelope.arguments.get("server", ""),
+                    envelope.arguments.get("name", ""),
+                    envelope.arguments.get("arguments", {}),
+                )
 
         if source is not None:
             self.store.save_source(source)
-            self._scan_result_content(envelope, source, result)
+            source_text = (envelope.arguments.get("content", "")
+                           if envelope.tool == "memory.write" else result.output)
+            self._scan_result_content(envelope, source, source_text)
+            self.recent_sources.append((source, source_text))
+            self.recent_sources = self.recent_sources[-6:]
+            self.store.append_event(AuditEvent(
+                trace_id=envelope.trace_id, type=EventType.SOURCE_RECORDED,
+                session_id=envelope.session_id, call_id=envelope.call_id,
+                source_id=source.source_id,
+                payload={"type": source.type.value, "uri": source.uri,
+                         "content_hash": source.content_hash,
+                         "parent_source_id": source.parent_source_id},
+            ))
+        if result.ok and envelope.tool in ("memory.read", "memory.write"):
+            self.store.append_event(AuditEvent(
+                trace_id=envelope.trace_id,
+                type=(EventType.MEMORY_READ if envelope.tool == "memory.read"
+                      else EventType.MEMORY_WRITTEN),
+                session_id=envelope.session_id, call_id=envelope.call_id,
+                source_id=source.source_id if source else None,
+                payload={"key": envelope.arguments.get("key", "")},
+            ))
+        if result.ok and envelope.tool.startswith("mcp."):
+            self.store.append_event(AuditEvent(
+                trace_id=envelope.trace_id, type=EventType.MCP_RELAYED,
+                session_id=envelope.session_id, call_id=envelope.call_id,
+                source_id=source.source_id if source else None,
+                payload={"server": envelope.arguments.get("server", ""),
+                         "name": envelope.arguments.get("name", "")},
+            ))
         event_type = EventType.TOOL_EXECUTED if result.ok else EventType.TOOL_REFUSED
         self.store.append_event(AuditEvent(
             trace_id=envelope.trace_id, type=event_type,
@@ -290,11 +410,20 @@ class GatewaySession:
     def try_execute(self, envelope: ToolCallEnvelope,
                     decision: Decision) -> tuple[ToolResult, ContentSource | None]:
         """按裁决结果执行：ALLOW 直接执行；CONFIRM 需有效批准；BLOCK 拒绝。"""
+        saved = self.store.get_decision(decision.decision_id)
+        if envelope.session_id != self.mission.session_id or \
+                envelope.mission_version != self.mission.version or \
+                decision.call_id != envelope.call_id or \
+                decision.arguments_hash != envelope.arguments_hash or \
+                saved is None or saved["call_id"] != envelope.call_id or \
+                saved["action"] != decision.action.value:
+            return ToolResult(ok=False, error="裁决与本次调用不匹配"), None
         if decision.action == DecisionAction.ALLOW:
             return self.execute(envelope)
         if decision.action == DecisionAction.CONFIRM:
             approved = valid_approval(self.store, envelope.tool,
-                                      envelope.arguments_hash, self.mission.user_id)
+                                      envelope.arguments_hash, self.mission.user_id,
+                                      envelope.session_id)
             if approved is not None:
                 return self.execute(envelope)
             return (ToolResult(ok=False,
@@ -303,14 +432,17 @@ class GatewaySession:
         return (ToolResult(ok=False, error=f"网关拒绝: {decision.reason}"), None)
 
     def _scan_result_content(self, envelope: ToolCallEnvelope,
-                             source: ContentSource, result: ToolResult) -> None:
-        """工具结果进入 Agent 前标注来源敏感标签（B 阶段 exact_bytes 简版）。"""
-        found = self.taint.scan_and_register(result.output)
-        if not found:
+                             source: ContentSource, text: str) -> None:
+        """进入 Agent 或记忆的文本统一标注敏感及注入标签。"""
+        found = self.taint.scan_and_register(text)
+        injection_hits = detect_injection(text)
+        if not found and not injection_hits:
             return
         labels: set[DataLabelName] = set()
         for _snippet, snippet_labels in found:
             labels |= set(snippet_labels)
+        if injection_hits:
+            labels.add(DataLabelName.UNTRUSTED_INSTRUCTION)
         self.store.save_data_label(DataLabel(
             source_id=source.source_id, field_path="$.content", labels=labels,
             propagation_basis=PropagationBasis.EXACT_BYTES,
@@ -320,7 +452,7 @@ class GatewaySession:
             session_id=envelope.session_id, call_id=envelope.call_id,
             source_id=source.source_id,
             payload={"labels": [x.value for x in labels],
-                     "snippets": len(found)},
+                     "snippets": len(found), "injection_hits": len(injection_hits)},
         ))
 
 

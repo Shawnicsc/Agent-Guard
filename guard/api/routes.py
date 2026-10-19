@@ -57,6 +57,7 @@ def create_session(body: CreateSessionBody, request: Request) -> dict:
         goal=body.goal,
         goal_category=body.goal_category,
         policy_engine=request.app.state.sessions_engine,
+        semantic_analyzer=request.app.state.semantic_analyzer,
         allowed_resources=body.allowed_resources or None,
         allowed_actions=body.allowed_actions or None,
         allow_exfiltration=body.allow_exfiltration,

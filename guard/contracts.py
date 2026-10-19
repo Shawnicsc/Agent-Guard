@@ -209,6 +209,7 @@ class EventType(StrEnum):
     LLM_RESPONSE = "llm_response"
     CALL_RECEIVED = "call_received"
     DECISION_MADE = "decision_made"
+    SEMANTIC_ANALYZED = "semantic_analyzed"
     TOOL_EXECUTED = "tool_executed"
     TOOL_REFUSED = "tool_refused"
     SOURCE_RECORDED = "source_recorded"

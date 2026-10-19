@@ -58,9 +58,20 @@ class LabelTracker:
 
     def labels_in(self, arguments: dict) -> frozenset[DataLabelName]:
         """检查调用参数是否包含已登记的敏感片段（字节一致匹配）。"""
-        values = [v for v in arguments.values() if isinstance(v, str)]
+        values = string_values(arguments)
         labels: set[DataLabelName] = set()
         for snippet, snippet_labels in self.snippets:
             if any(snippet in v for v in values):
                 labels |= snippet_labels
         return frozenset(labels)
+
+
+def string_values(value: object) -> list[str]:
+    """递归取得结构化调用参数中的字符串叶子。"""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [item for child in value.values() for item in string_values(child)]
+    if isinstance(value, (list, tuple)):
+        return [item for child in value for item in string_values(child)]
+    return []

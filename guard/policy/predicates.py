@@ -32,6 +32,7 @@ class EvalContext:
     mission: MissionSpec
     # 当前调用载荷携带的敏感标签（由 taint 传播计算，B 阶段为 exact_bytes 简版）
     carried_labels: frozenset[DataLabelName] = field(default_factory=frozenset)
+    suspected_labels: frozenset[DataLabelName] = field(default_factory=frozenset)
     # 语义研判结果；None = 尚未分析，一律按 uncertain 保守处理
     semantic_facts: SemanticFacts | None = None
     # 信任域名集合，由策略文件 trusted_domains 提供并由引擎注入
@@ -112,6 +113,11 @@ def _eval_payload_has_label(param, ctx: EvalContext) -> bool:
     return bool(ctx.carried_labels & labels)
 
 
+def _eval_payload_suspected_label(param, ctx: EvalContext) -> bool:
+    labels = {param} if isinstance(param, str) else set(param)
+    return bool(ctx.suspected_labels & labels)
+
+
 def _eval_mission_allows(param: str, ctx: EvalContext) -> bool:
     return param in ctx.mission.allowed_actions
 
@@ -172,6 +178,8 @@ PREDICATES: dict[str, PredicateDef] = {
     "destination_trust": PredicateDef(_check_str("destination_trust"), _eval_destination_trust),
     "payload_has_label": PredicateDef(_check_str_list("payload_has_label"),
                                       _eval_payload_has_label),
+    "payload_suspected_label": PredicateDef(
+        _check_str_list("payload_suspected_label"), _eval_payload_suspected_label),
     "mission_allows": PredicateDef(_check_str("mission_allows"), _eval_mission_allows),
     "mission_goal_is": PredicateDef(_check_str("mission_goal_is"), _eval_mission_goal_is),
     "mission_flag": PredicateDef(_check_str("mission_flag"), _eval_mission_flag),

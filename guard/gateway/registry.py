@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-ExecutorKey = Literal["fs", "net", "exec", "git", "subagent"]
+ExecutorKey = Literal["fs", "net", "exec", "git", "subagent", "memory", "mcp"]
 
 
 class ToolSpec(BaseModel):
@@ -142,4 +142,35 @@ _register(ToolSpec(
         },
         "required": ["task"],
     },
+))
+
+_register(ToolSpec(
+    name="memory.write", executor="memory", read_only=False,
+    description="将内容写入当前用户的跨会话记忆",
+    parameters={"type": "object", "properties": {
+        "key": {"type": "string"}, "content": {"type": "string"}},
+        "required": ["key", "content"]},
+))
+
+_register(ToolSpec(
+    name="memory.read", executor="memory", read_only=True,
+    description="读取当前用户指定键的跨会话记忆",
+    parameters={"type": "object", "properties": {"key": {"type": "string"}},
+                "required": ["key"]},
+))
+
+_register(ToolSpec(
+    name="mcp.list", executor="mcp", read_only=True,
+    description="列举一个预配置 MCP Server 上已授权工具的描述",
+    parameters={"type": "object", "properties": {"server": {"type": "string"}},
+                "required": ["server"]},
+))
+
+_register(ToolSpec(
+    name="mcp.call", executor="mcp", read_only=False,
+    description="调用一个预配置 MCP Server 上已授权的工具",
+    parameters={"type": "object", "properties": {
+        "server": {"type": "string"}, "name": {"type": "string"},
+        "arguments": {"type": "object"}},
+        "required": ["server", "name", "arguments"]},
 ))

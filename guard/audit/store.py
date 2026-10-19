@@ -111,6 +111,15 @@ CREATE TABLE IF NOT EXISTS policy_versions (
     content TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS memory_entries (
+    user_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    content TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, key)
+);
 """
 
 
@@ -196,6 +205,21 @@ class AuditStore:
             )
             self._conn.commit()
 
+    def save_memory(self, user_id: str, key: str, content: str,
+                    source_id: str, session_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO memory_entries VALUES (?,?,?,?,?,?)",
+                (user_id, key, content, source_id, session_id, utcnow().isoformat()),
+            )
+            self._conn.commit()
+
+    def get_memory(self, user_id: str, key: str) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM memory_entries WHERE user_id = ? AND key = ?",
+            (user_id, key),
+        ).fetchone()
+
     def append_event(self, event: AuditEvent) -> int:
         with self._lock:
             cur = self._conn.execute(
@@ -260,6 +284,12 @@ class AuditStore:
         return self._conn.execute(
             "SELECT * FROM decisions WHERE decision_id = ?", (decision_id,)
         ).fetchone()
+
+    def call_session(self, call_id: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT session_id FROM calls WHERE call_id = ?", (call_id,),
+        ).fetchone()
+        return row["session_id"] if row else None
 
 
 def _row_to_approval(row: sqlite3.Row):

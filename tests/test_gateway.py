@@ -136,7 +136,8 @@ def test_session_trace_shared(session):
 def test_registry_consistency():
     tools = all_tools()
     assert set(tools) == {"fs.read", "fs.write", "net.fetch", "exec.run",
-                          "git.push", "agent.spawn"}
+                          "git.push", "agent.spawn", "memory.read", "memory.write",
+                          "mcp.list", "mcp.call"}
     openai_defs = openai_tools()
     assert {t["function"]["name"] for t in openai_defs} == set(tools)
     assert all(t["function"]["parameters"]["type"] == "object" for t in openai_defs)

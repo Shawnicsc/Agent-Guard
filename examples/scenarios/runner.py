@@ -23,12 +23,20 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from guard.audit.store import AuditStore  # noqa: E402
 from guard.config import settings  # noqa: E402
+from guard.contracts import (  # noqa: E402
+    AuditEvent,
+    ContentSource,
+    EventType,
+    SourceType,
+    content_hash,
+)
 from guard.gateway.runner import SandboxRunner  # noqa: E402
 from guard.gateway.session import GatewaySession  # noqa: E402
 from guard.llm.client import LLMClient  # noqa: E402
 from guard.llm.config import load_providers, resolve_provider  # noqa: E402
 from guard.policy.approval import decide_approval  # noqa: E402
 from guard.sandbox.spec import SandboxSpec  # noqa: E402
+from guard.semantic.analyzer import SemanticAnalyzer  # noqa: E402
 
 
 def seed_workspace(workspace_root: Path, seed_files: dict[str, str]) -> None:
@@ -136,6 +144,24 @@ def run_direct_scenario(scenario: dict, store: AuditStore) -> int:
     )
     seed_workspace(session.workspace_root, scenario.get("seed_files"))
     seed_content(session.workspace_root, scenario.get("seed_content"))
+    if scenario.get("semantic"):
+        providers = load_providers(settings.providers_config)
+        override = os.environ.get("AGENT_GUARD_PROVIDER") or settings.provider
+        name, provider = resolve_provider(providers, override)
+        session.semantic_analyzer = SemanticAnalyzer(LLMClient(provider, name))
+    # 直接模式的外部来源夹具：模拟 Agent 已经读到网页、描述或记忆。
+    for entry in scenario.get("source_content") or []:
+        text = entry["text"]
+        source = ContentSource(type=SourceType(entry["type"]),
+                               uri=entry["uri"], content_hash=content_hash(text))
+        store.save_source(source)
+        session.recent_sources.append((source, text))
+        store.append_event(AuditEvent(
+            trace_id=session.trace_id, type=EventType.SOURCE_RECORDED,
+            session_id=session.mission.session_id, source_id=source.source_id,
+            payload={"type": source.type.value, "uri": source.uri,
+                     "fixture": True},
+        ))
 
     call_log: list[dict] = []
     failures: list[str] = []

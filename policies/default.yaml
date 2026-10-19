@@ -1,6 +1,6 @@
 # 首批硬规则（DESIGN.md 第 6 节）：覆盖赛题能力 3 的五类管控。
 # 规则按 priority 降序评估；同一调用命中多条时 BLOCK > CONFIRM > ALLOW。
-version: b1
+version: c1
 
 # 信任域名白名单：不在此列且非本地的出站目标均视为 external
 trusted_domains:
@@ -10,6 +10,55 @@ trusted_domains:
 default_decision: ALLOW
 
 rules:
+  - id: deny_memory_poisoning
+    priority: 100
+    when:
+      all:
+        - action_is: memory.write
+        - payload_has_label: untrusted_instruction
+    decision: BLOCK
+    reason: 不可信指令不得写入跨会话记忆
+
+  - id: deny_semantic_deviation
+    priority: 85
+    when:
+      semantic_task_relation: deviated
+    decision: BLOCK
+    reason: 工具调用偏离已冻结的用户任务
+
+  - id: confirm_memory_write
+    priority: 40
+    when:
+      action_is: memory.write
+    decision: CONFIRM
+    reason: 跨会话记忆写入需要用户确认
+
+  - id: deny_secret_to_mcp
+    priority: 100
+    when:
+      all:
+        - action_is: mcp.call
+        - payload_has_label: [secret, credential]
+    decision: BLOCK
+    reason: 不允许向 MCP Server 传递当前会话敏感内容
+
+  - id: confirm_suspected_exfiltration
+    priority: 45
+    when:
+      all:
+        - action_is: net.fetch
+        - destination_trust: external
+        - payload_suspected_label: [secret, credential]
+    decision: CONFIRM
+    reason: 外发内容与会话敏感数据疑似关联，需要确认
+
+  - id: confirm_mcp_call
+    priority: 35
+    when:
+      action_is: mcp.call
+    decision: CONFIRM
+    reason: 调用外部 MCP 工具需要用户确认
+
   # ---- 一类：敏感路径写入 ----
   - id: deny_sensitive_write
     priority: 100

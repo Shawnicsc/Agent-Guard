@@ -34,6 +34,7 @@ from guard.gateway.session import GatewaySession
 from guard.llm.client import LLMClient, LLMError
 from guard.sandbox import docker
 from guard.sandbox.spec import SandboxSpec
+from guard.semantic.analyzer import SemanticAnalyzer
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class SandboxRunner:
         self.llm = llm
         self.spec = spec
         self.store = store
+        self.session.semantic_analyzer = SemanticAnalyzer(llm)
         # 全部调用记录（含被拒），供场景断言与测试使用
         self.call_log: list[dict] = []
 

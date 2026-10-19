@@ -73,9 +73,11 @@ def decide_approval(store: AuditStore, approval_id: str, user_id: str,
 
 
 def valid_approval(store: AuditStore, tool: str, arguments_hash: str,
-                   user_id: str) -> ApprovalRecord | None:
+                   user_id: str, session_id: str | None = None) -> ApprovalRecord | None:
     """找到对当前 (tool, 参数摘要, 用户) 仍有效的批准；参数不一致返回 None。"""
     for record in store.approvals_for_hash(arguments_hash):
-        if record.is_valid_for(tool, arguments_hash, user_id):
+        if record.is_valid_for(tool, arguments_hash, user_id) and (
+            session_id is None or store.call_session(record.call_id) == session_id
+        ):
             return record
     return None

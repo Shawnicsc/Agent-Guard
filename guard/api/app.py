@@ -13,6 +13,7 @@ from guard.config import settings
 from guard.gateway.session import _load_default_engine
 from guard.llm.client import LLMClient
 from guard.llm.config import load_providers, resolve_provider
+from guard.semantic.analyzer import SemanticAnalyzer
 
 
 def create_app() -> FastAPI:
@@ -25,6 +26,7 @@ def create_app() -> FastAPI:
     providers = load_providers(settings.providers_config)
     _name, provider = resolve_provider(providers, settings.provider)
     app.state.llm = LLMClient(provider, _name)
+    app.state.semantic_analyzer = SemanticAnalyzer(app.state.llm)
 
     from guard.api.routes import router
 
