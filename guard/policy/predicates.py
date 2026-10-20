@@ -17,6 +17,7 @@ from typing import Any
 from guard.contracts import (
     DataLabelName,
     MissionSpec,
+    RehearsalFacts,
     SemanticFacts,
     TaskRelation,
     ToolCallEnvelope,
@@ -35,6 +36,7 @@ class EvalContext:
     suspected_labels: frozenset[DataLabelName] = field(default_factory=frozenset)
     # 语义研判结果；None = 尚未分析，一律按 uncertain 保守处理
     semantic_facts: SemanticFacts | None = None
+    rehearsal_facts: RehearsalFacts | None = None
     # 信任域名集合，由策略文件 trusted_domains 提供并由引擎注入
     trusted_domains: frozenset[str] = field(default_factory=frozenset)
 
@@ -180,6 +182,10 @@ def _eval_semantic_task_relation(param: str, ctx: EvalContext) -> bool:
     return relation == param
 
 
+def _eval_rehearsal_attributed(param: bool, ctx: EvalContext) -> bool:
+    return bool(ctx.rehearsal_facts and ctx.rehearsal_facts.status == "attributed") == param
+
+
 PREDICATES: dict[str, PredicateDef] = {
     "action_is": PredicateDef(_check_str("action_is"), _eval_action_is),
     "path_under": PredicateDef(_check_str_list("path_under"), _eval_path_under),
@@ -197,4 +203,6 @@ PREDICATES: dict[str, PredicateDef] = {
                                              _eval_capability_subset),
     "semantic_task_relation": PredicateDef(_check_str("semantic_task_relation"),
                                            _eval_semantic_task_relation),
+    "rehearsal_attributed": PredicateDef(_check_bool("rehearsal_attributed"),
+                                         _eval_rehearsal_attributed),
 }

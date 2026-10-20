@@ -172,6 +172,26 @@ class SemanticFacts(BaseModel):
         return cls(task_relation=TaskRelation.UNCERTAIN)
 
 
+class RehearsalStatus(StrEnum):
+    ATTRIBUTED = "attributed"
+    NOT_ATTRIBUTED = "not_attributed"
+    UNAVAILABLE = "unavailable"
+
+
+class RehearsalFacts(BaseModel):
+    """隔离副本的行为对照结果；只有 attributable 才能触发新禁令。"""
+
+    status: RehearsalStatus
+    signals: list[str] = Field(default_factory=list)
+    replay_signals: list[str] = Field(default_factory=list)
+    duration_ms: float = Field(default=0.0, ge=0.0)
+    reason: str = ""
+    source_count: int = 0
+    replay_call_count: int = Field(default=0, ge=0)
+    replay_tools: list[str] = Field(default_factory=list)
+    cached: bool = False
+
+
 class DecisionAction(StrEnum):
     ALLOW = "ALLOW"
     CONFIRM = "CONFIRM"
@@ -218,6 +238,10 @@ class EventType(StrEnum):
     MEMORY_WRITTEN = "memory_written"
     MCP_RELAYED = "mcp_relayed"
     SUBAGENT_SPAWNED = "subagent_spawned"
+    # 沙箱绊网：沙箱内命令命中高危行为模式（rehearsal 阶段 2）
+    TRIPWIRE_HIT = "tripwire_hit"
+    REHEARSAL_STEP = "rehearsal_step"
+    REHEARSAL_RUN = "rehearsal_run"
     ALERT = "alert"
 
 

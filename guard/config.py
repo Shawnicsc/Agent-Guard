@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     demo_agent_dir: Path = PROJECT_ROOT / "examples" / "demo_agent"
     # 策略文件
     policy_file: Path = PROJECT_ROOT / "policies" / "default.yaml"
+    # 第三层总开关；关闭时不创建快照，也不发起净化重跑
+    rehearsal_enabled: bool = False
+    rehearsal_timeout_s: float = 30.0
 
 
 settings = Settings()

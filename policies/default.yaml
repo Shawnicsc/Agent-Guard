@@ -1,6 +1,6 @@
 # 首批硬规则（DESIGN.md 第 6 节）：覆盖赛题能力 3 的五类管控。
 # 规则按 priority 降序评估；同一调用命中多条时 BLOCK > CONFIRM > ALLOW。
-version: c2
+version: c3
 
 # 信任域名白名单：不在此列且非本地的出站目标均视为 external
 trusted_domains:
@@ -25,6 +25,13 @@ rules:
       semantic_task_relation: deviated
     decision: BLOCK
     reason: 工具调用偏离已冻结的用户任务
+
+  - id: deny_rehearsal_attributed_risk
+    priority: 100
+    when:
+      rehearsal_attributed: true
+    decision: BLOCK
+    reason: 隔离净化重跑中高危动作消失，归因于低信任内容
 
   - id: confirm_memory_write
     priority: 40

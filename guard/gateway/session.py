@@ -27,6 +27,7 @@ from guard.contracts import (
     GoalCategory,
     MissionSpec,
     PropagationBasis,
+    RehearsalFacts,
     SemanticFacts,
     SourceType,
     ToolCallEnvelope,
@@ -50,6 +51,8 @@ from guard.policy.approval import create_approval, valid_approval
 from guard.policy.dsl import compile_policy_file
 from guard.policy.engine import PolicyEngine
 from guard.policy.predicates import EvalContext
+from guard.rehearsal.service import RehearsalService, ReplayOutcome
+from guard.sandbox.tripwire import TripwireScanner
 from guard.semantic.analyzer import SemanticAnalyzer
 from guard.taint.detectors import detect_injection
 from guard.taint.labels import string_values
@@ -79,6 +82,7 @@ class GatewaySession:
         agent_id: str = MAIN_AGENT_ID,
         agent_capabilities: frozenset[str] | None = None,
         parent_call_id: str | None = None,
+        rehearsal_service: RehearsalService | None = None,
     ) -> None:
         self.store = store
         self.mission = mission
@@ -97,6 +101,8 @@ class GatewaySession:
         self.memory = MemoryExecutor(store, mission.user_id, mission.session_id)
         self.subagent = SubagentExecutor(self)
         self.exec = ExecExecutor(container_name) if container_name else None
+        # 沙箱绊网（rehearsal 阶段 2）：exec 命令执行前扫描高危行为模式
+        self.tripwire: TripwireScanner | None = None
         self.taint = PropagationEngine()
         self.recent_sources: list[tuple[ContentSource, str]] = []
         self.semantic_analyzer = semantic_analyzer
@@ -107,6 +113,12 @@ class GatewaySession:
         if policy_engine is None:
             policy_engine = _load_default_engine()
         self.policy_engine = policy_engine
+        self.rehearsal_service = rehearsal_service
+        if self.rehearsal_service is None and settings.rehearsal_enabled \
+                and getattr(policy_engine, "uses_predicate", lambda _name: False)(
+                    "rehearsal_attributed"):
+            self.rehearsal_service = RehearsalService(
+                lambda _call: ReplayOutcome(False, [], 0, "无可重放的沙箱任务上下文"))
 
     # ---- 会话创建 ----
 
@@ -279,6 +291,37 @@ class GatewaySession:
             log.warning("策略引擎异常，走降级路径: %s", exc)
             return self._degraded_decision(envelope, spec)
 
+        approved = None
+        if result.action == DecisionAction.CONFIRM:
+            approved = valid_approval(self.store, envelope.tool,
+                                      envelope.arguments_hash, self.mission.user_id,
+                                      envelope.session_id)
+        if settings.rehearsal_enabled \
+                and (result.action == DecisionAction.ALLOW or approved is not None) \
+                and self.rehearsal_service is not None:
+            try:
+                triggered = self.rehearsal_service.should_rehearse(envelope)
+                if triggered:
+                    facts = self.rehearsal_service.assess(
+                        envelope, tuple(source.content_hash for source, _ in self.recent_sources))
+                    ctx.rehearsal_facts = facts
+                    self.store.append_event(AuditEvent(
+                        trace_id=envelope.trace_id, type=EventType.REHEARSAL_RUN,
+                        session_id=envelope.session_id, call_id=envelope.call_id,
+                        parent_call_id=envelope.parent_call_id, agent_id=envelope.agent_id,
+                        payload=facts.model_dump(mode="json"),
+                    ))
+                    if facts.status != "unavailable":
+                        result = self.policy_engine.decide(ctx)
+            except Exception as exc:
+                log.warning("彩排层不可用，沿用原裁决: %s", exc)
+                self.store.append_event(AuditEvent(
+                    trace_id=envelope.trace_id, type=EventType.REHEARSAL_RUN,
+                    session_id=envelope.session_id, call_id=envelope.call_id,
+                    payload=RehearsalFacts(status="unavailable", reason=str(exc))
+                    .model_dump(mode="json"),
+                ))
+
         # 优先级：硬性禁令 > 已批准的精确调用 > 需要确认 > 默认放行
         if result.action == DecisionAction.BLOCK:
             return Decision(
@@ -291,9 +334,6 @@ class GatewaySession:
 
         if result.action == DecisionAction.CONFIRM:
             # 已批准的精确调用：工具+参数一致且未过期 -> 放行（重试新 call_id 亦有效）
-            approved = valid_approval(self.store, envelope.tool,
-                                      envelope.arguments_hash, self.mission.user_id,
-                                      envelope.session_id)
             if approved is not None:
                 return Decision(
                     call_id=envelope.call_id, action=DecisionAction.ALLOW,
@@ -356,7 +396,10 @@ class GatewaySession:
             if self.exec is None:
                 result = ToolResult(ok=False, error="任务沙箱未启动")
             else:
-                result = self.exec.run(envelope.arguments.get("command", ""))
+                command = envelope.arguments.get("command", "")
+                if self.tripwire is not None:
+                    self._scan_tripwire(envelope, command)
+                result = self.exec.run(command)
             if result.ok and result.output:
                 source = ContentSource(
                     type=SourceType.TOOL_RESULT,
@@ -464,6 +507,17 @@ class GatewaySession:
                                error=f"需用户确认（approval={decision.approval_id}），"
                                      "已创建待批准记录"), None)
         return (ToolResult(ok=False, error=f"网关拒绝: {decision.reason}"), None)
+
+    def _scan_tripwire(self, envelope: ToolCallEnvelope, command: str) -> None:
+        """exec 命令绊网扫描：命中即写 TRIPWIRE_HIT 审计事件（只观测不拦截）。"""
+        for hit in self.tripwire.scan(command):
+            self.store.append_event(AuditEvent(
+                trace_id=envelope.trace_id, type=EventType.TRIPWIRE_HIT,
+                session_id=envelope.session_id, call_id=envelope.call_id,
+                parent_call_id=envelope.parent_call_id,
+                agent_id=envelope.agent_id,
+                payload=hit.payload(),
+            ))
 
     def _scan_result_content(self, envelope: ToolCallEnvelope,
                              source: ContentSource, text: str) -> None:

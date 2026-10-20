@@ -108,7 +108,7 @@ def test_policies_route(tmp_path, monkeypatch):
     resp = client.get("/policies")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["version"] == "c1"
+    assert body["version"] == "c3"
     ids = {r["id"] for r in body["rules"]}
     assert "deny_secret_exfiltration" in ids
     assert "pypi.org" in body["trusted_domains"]
@@ -132,7 +132,7 @@ def test_policies_validate_route(tmp_path, monkeypatch):
     body = bad.json()
     assert body["valid"] is False and "未注册的谓词" in body["error"]
     # 校验不影响当前生效版本
-    assert client.get("/policies").json()["version"] == "c1"
+    assert client.get("/policies").json()["version"] == "c3"
 
 
 def test_incident_routes(tmp_path, monkeypatch):

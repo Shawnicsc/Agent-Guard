@@ -23,24 +23,42 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import shutil
 import subprocess
+import tempfile
 import time
 from dataclasses import replace
 from pathlib import Path
 
 from guard.audit.store import AuditStore
-from guard.contracts import AuditEvent, EventType
+from guard.config import settings
+from guard.contracts import (
+    AuditEvent,
+    ContentSource,
+    EventType,
+    SourceType,
+    ToolResult,
+    TrustLevel,
+)
 from guard.gateway.registry import openai_tools
 from guard.gateway.session import GatewaySession
 from guard.llm.client import LLMClient, LLMError
+from guard.rehearsal.service import RehearsalService, ReplayOutcome
 from guard.sandbox import docker
 from guard.sandbox.spec import SandboxSpec
+from guard.sandbox.tripwire import TripwireScanner
 from guard.semantic.analyzer import SemanticAnalyzer
 
 log = logging.getLogger(__name__)
 
 MISSION_TIMEOUT_S = 600.0
 MAX_SUBAGENT_DEPTH = 2
+_RISK_LINE_RE = re.compile(
+    r"\b(?:curl|wget|nc|ncat|ssh|scp|sudo|mount|unshare|base64|tar|shred|truncate)\b"
+    r"|/etc/(?:shadow|sudoers)|\.ssh/|\brm\s+-|https?://",
+    re.IGNORECASE,
+)
 
 
 class RunnerError(RuntimeError):
@@ -49,22 +67,52 @@ class RunnerError(RuntimeError):
 
 class SandboxRunner:
     def __init__(self, session: GatewaySession, llm: LLMClient, spec: SandboxSpec,
-                 store: AuditStore, depth: int = 0) -> None:
+                 store: AuditStore, depth: int = 0, shadow: bool = False) -> None:
         self.session = session
         self.llm = llm
         self.spec = spec
         self.store = store
         self.depth = depth
+        self.shadow = shadow
+        self._snapshot: Path | None = None
+        self._message = ""
+        self._observed_sources: list[tuple[ContentSource, str]] = []
         self.session.semantic_analyzer = SemanticAnalyzer(llm)
         # 全部调用记录（含被拒），供场景断言与测试使用
         self.call_log: list[dict] = []
 
     def run(self, message: str, timeout: float = MISSION_TIMEOUT_S) -> dict:
         """启动沙箱并驱动 Agent 完成一次任务，返回执行摘要。"""
-        proc = docker.start_agent_container(self.spec)
+        self._observed_sources = []
+        snapshot_tmp = None
+        prior_rehearsal = self.session.rehearsal_service
+        if settings.rehearsal_enabled and not self.shadow \
+                and getattr(self.session.policy_engine, "uses_predicate",
+                            lambda _name: False)("rehearsal_attributed"):
+            try:
+                snapshot_tmp = tempfile.TemporaryDirectory(prefix="agent-guard-snapshot-")
+                self._snapshot = Path(snapshot_tmp.name) / "workspace"
+                shutil.copytree(self.session.workspace_root, self._snapshot, symlinks=True)
+                self._message = message
+                self.session.rehearsal_service = RehearsalService(self._run_sanitized)
+            except OSError as exc:
+                log.warning("彩排工作区快照不可用: %s", exc)
+                self._snapshot = None
+                self.session.rehearsal_service = RehearsalService(self._run_sanitized)
+        try:
+            proc = docker.start_agent_container(self.spec)
+        except Exception:
+            if snapshot_tmp is not None:
+                snapshot_tmp.cleanup()
+            self._snapshot = None
+            self.session.rehearsal_service = prior_rehearsal
+            raise
         from guard.gateway.executors.exec import ExecExecutor
 
         self.session.exec = ExecExecutor(self.spec.container_name)
+        # 沙箱内命令逐条过绊网（rehearsal 阶段 2：只观测不拦截）
+        if self.session.tripwire is None:
+            self.session.tripwire = TripwireScanner()
         deadline = time.monotonic() + timeout
         summary: dict = {"completed": False, "summary": "", "refused": 0}
         try:
@@ -111,6 +159,10 @@ class SandboxRunner:
                 summary["summary"] = summary.get("summary") or "任务超时"
         finally:
             self._cleanup(proc)
+            if snapshot_tmp is not None:
+                snapshot_tmp.cleanup()
+            self._snapshot = None
+            self.session.rehearsal_service = prior_rehearsal
         self.store.append_event(AuditEvent(
             trace_id=self.session.trace_id, type=EventType.AGENT_DONE,
             session_id=self.session.mission.session_id,
@@ -172,7 +224,15 @@ class SandboxRunner:
             return 1
         decision = self.session.decide(envelope)
         record["decision"] = decision
-        result, _source = self.session.try_execute(envelope, decision)
+        if self.shadow and tool not in {"fs.read", "fs.write", "exec.run"}:
+            result = ToolResult(ok=False, error="净化副本只记录外部调用，不执行副作用")
+        else:
+            result, _source = self.session.try_execute(envelope, decision)
+        observed = {source.source_id for source, _ in self._observed_sources}
+        self._observed_sources.extend(
+            (source, content) for source, content in self.session.recent_sources
+            if source.source_id not in observed
+        )
         if tool == "agent.spawn" and result.ok:
             if self.depth >= MAX_SUBAGENT_DEPTH:
                 result = result.model_copy(update={
@@ -224,6 +284,94 @@ class SandboxRunner:
         except subprocess.TimeoutExpired:
             proc.kill()
         docker.stop_container(self.spec.container_name)
+
+    def _run_sanitized(self, envelope) -> ReplayOutcome:
+        """从任务起点重跑等长净化工作区，外部调用只记录不执行。"""
+        if self._snapshot is None:
+            return ReplayOutcome(False, [], 0, "主任务快照不可用")
+        if any(Path(host).resolve() != self.session.workspace_root.resolve()
+               for host, _ in self.spec.extra_mounts):
+            return ReplayOutcome(False, [], 0, "工作区外挂载无法安全复制")
+        with tempfile.TemporaryDirectory(prefix="agent-guard-replay-") as tmp:
+            root = Path(tmp)
+            replay_store = AuditStore(root / "audit.db")
+            try:
+                replay_session = GatewaySession.create(
+                    replay_store, root / "workspaces", user_id=self.session.mission.user_id,
+                    goal=self.session.mission.goal,
+                    goal_category=self.session.mission.goal_category.value,
+                    allowed_resources=list(self.session.mission.allowed_resources),
+                    allowed_actions=list(self.session.mission.allowed_actions),
+                    allow_exfiltration=self.session.mission.allow_exfiltration,
+                    allow_push=self.session.mission.allow_push,
+                    policy_engine=self.session.policy_engine,
+                )
+                # 彩排本身只采集候选调用，不再启动下一层彩排。
+                replay_session.rehearsal_service = None
+                shutil.copytree(self._snapshot, replay_session.workspace_root,
+                                dirs_exist_ok=True, symlinks=True)
+                changed = self._sanitize_sources(replay_session.workspace_root)
+                self.store.append_event(AuditEvent(
+                    trace_id=envelope.trace_id, type=EventType.REHEARSAL_STEP,
+                    session_id=envelope.session_id, call_id=envelope.call_id,
+                    payload={"step": "source_sanitized", "source_count": changed},
+                ))
+                if changed == 0:
+                    return ReplayOutcome(False, [], 0, "没有可定位的低信任文件来源")
+                mounts = [(str(replay_session.workspace_root), container)
+                          for _, container in self.spec.extra_mounts]
+                replay_spec = replace(
+                    self.spec, session_id=replay_session.mission.session_id,
+                    extra_mounts=mounts,
+                )
+                runner = SandboxRunner(replay_session, self.llm, replay_spec,
+                                       replay_store, shadow=True)
+                runner.session.semantic_analyzer = None
+                summary = runner.run(self._message, timeout=settings.rehearsal_timeout_s)
+                completed = bool(summary["completed"]) and not summary["summary"].startswith(
+                    "达到最大轮数上限")
+                self.store.append_event(AuditEvent(
+                    trace_id=envelope.trace_id, type=EventType.REHEARSAL_STEP,
+                    session_id=envelope.session_id, call_id=envelope.call_id,
+                    payload={"step": "shadow_finished", "completed": completed,
+                             "call_tools": [call["tool"] for call in runner.call_log],
+                             "call_count": len(runner.call_log),
+                             "reason": summary.get("summary", "") if not completed else ""},
+                ))
+                return ReplayOutcome(
+                    completed,
+                    [{"tool": c["tool"], "arguments": c["arguments"]}
+                     for c in runner.call_log], changed,
+                    summary.get("summary", "") if not completed else "",
+                )
+            finally:
+                replay_store.close()
+
+    def _sanitize_sources(self, replay_workspace: Path) -> int:
+        """只改已进入模型上下文、且能对应到初始快照的工作区文件。"""
+        source_texts = [text for source, text in
+                        [*self._observed_sources, *self.session.recent_sources]
+                        if source.type in {SourceType.FILE, SourceType.TOOL_RESULT}
+                        and source.trust_level == TrustLevel.LOW
+                        and len(text) >= 20]
+        if not source_texts:
+            return 0
+        changed = 0
+        for path in replay_workspace.rglob("*"):
+            if not path.is_file() or path.is_symlink():
+                continue
+            try:
+                content = path.read_text(encoding="utf-8")
+            except (UnicodeError, OSError):
+                continue
+            if content.strip() and any(content.strip() in text for text in source_texts):
+                lines = content.splitlines(keepends=True)
+                sanitized = ["".join("\n" if ch == "\n" else "x" for ch in line)
+                             if _RISK_LINE_RE.search(line) else line for line in lines]
+                if sanitized != lines:
+                    path.write_text("".join(sanitized), encoding="utf-8")
+                    changed += 1
+        return changed
 
 
 def seed_workspace(workspace_root: Path, files: dict[str, str]) -> None:

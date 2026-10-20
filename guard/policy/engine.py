@@ -40,6 +40,10 @@ class PolicyEngine:
     def __init__(self, policy) -> None:
         self.policy = policy
 
+    def uses_predicate(self, name: str) -> bool:
+        return any(leaf.name == name for rule in self.policy.rules
+                   for leaf in _collect_leaves(rule.condition))
+
     def decide(self, ctx: EvalContext) -> EngineResult:
         matched: list[CompiledRule] = []
         for rule in sorted(self.policy.rules, key=lambda r: -r.priority):
