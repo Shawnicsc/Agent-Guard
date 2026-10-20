@@ -1,4 +1,4 @@
-.PHONY: setup test smoke run-demo serve-local lint bench
+.PHONY: setup test smoke run-demo serve-local lint bench cve-repro cve-test
 
 setup:
 	uv sync
@@ -25,3 +25,10 @@ lint:
 # 阶段 D：跑对抗语料并产出指标报告
 bench:
 	uv run python scripts/bench.py
+
+# CVE 复现（独立工作场景：专用策略/审计库/工作区，不影响默认测试）
+cve-repro:
+	uv run python scripts/cve_repro.py
+
+cve-test:
+	uv run pytest tests/test_cve_scenarios.py -v

@@ -1,0 +1,189 @@
+# CVE 复现专用策略（独立于默认策略 default.yaml，不影响既有测试与评估结论）。
+# 在默认规则全集之上，新增两条 CVE 防御规则：
+#   - deny_agent_config_write：CVE-2025-53773（Copilot 自批准配置提权）
+#   - deny_code_injection_payload：CVE-2025-3248（向 AI 平台注入代码载荷）
+# 仅由 examples/cve_scenarios/ 与 scripts/cve_repro.py 使用。
+version: cve1
+
+# 信任域名白名单：不在此列且非本地的出站目标均视为 external
+trusted_domains:
+  - pypi.org
+  - huggingface.co
+
+default_decision: ALLOW
+
+rules:
+  - id: deny_memory_poisoning
+    priority: 100
+    when:
+      all:
+        - action_is: memory.write
+        - payload_has_label: untrusted_instruction
+    decision: BLOCK
+    reason: 不可信指令不得写入跨会话记忆
+
+  - id: deny_semantic_deviation
+    priority: 85
+    when:
+      semantic_task_relation: deviated
+    decision: BLOCK
+    reason: 工具调用偏离已冻结的用户任务
+
+  - id: deny_rehearsal_attributed_risk
+    priority: 100
+    when:
+      rehearsal_attributed: true
+    decision: BLOCK
+    reason: 隔离净化重跑中高危动作消失，归因于低信任内容
+
+  - id: confirm_memory_write
+    priority: 40
+    when:
+      action_is: memory.write
+    decision: CONFIRM
+    reason: 跨会话记忆写入需要用户确认
+
+  - id: deny_secret_to_mcp
+    priority: 100
+    when:
+      all:
+        - action_is: mcp.call
+        - payload_has_label: [secret, credential]
+    decision: BLOCK
+    reason: 不允许向 MCP Server 传递当前会话敏感内容
+
+  - id: confirm_suspected_exfiltration
+    priority: 45
+    when:
+      all:
+        - action_is: net.fetch
+        - destination_trust: external
+        - payload_suspected_label: [secret, credential]
+    decision: CONFIRM
+    reason: 外发内容与会话敏感数据疑似关联，需要确认
+
+  - id: confirm_mcp_call
+    priority: 35
+    when:
+      all:
+        - action_is: mcp.call
+        - mcp_server_trust: external
+    decision: CONFIRM
+    reason: 调用未在任务资源范围内预授权的 MCP Server 需要用户确认
+
+  # ---- 一类：敏感路径写入 ----
+  - id: deny_sensitive_write
+    priority: 100
+    when:
+      all:
+        - action_is: fs.write
+        - path_under:
+            - "~/.ssh/*"
+            - "~/.aws/*"
+            - "~/.gnupg/*"
+            - "/etc/cron*"
+            - "/etc/systemd/system/*"
+            - "/etc/init.d/*"
+            - "/root/*"
+    decision: BLOCK
+    reason: 禁止向 SSH/云凭据、计划任务与自启动目录等敏感路径写入
+
+  # ---- CVE-2025-53773：Agent/IDE 配置自我提权（如 chat.tools.autoApprove）----
+  - id: deny_agent_config_write
+    priority: 100
+    when:
+      all:
+        - action_is: fs.write
+        - path_under:
+            - ".vscode/*"
+            - "*/.vscode/*"
+            - "~/.config/Code/*"
+            - "~/.claude/*"
+    decision: BLOCK
+    reason: 禁止改写 Agent/IDE 自批准与行为配置（CVE-2025-53773 类自提权）
+
+  # ---- CVE-2025-3248：向 AI 平台注入任意代码的命令载荷 ----
+  - id: deny_code_injection_payload
+    priority: 100
+    when:
+      all:
+        - action_is: exec.run
+        - any:
+            - command_pattern: "os\\.system"
+            - command_pattern: "__import__"
+            - command_pattern: "\\bsubprocess\\."
+    decision: BLOCK
+    reason: 命令携带动态代码执行载荷（CVE-2025-3248 类 AI 平台代码注入）
+
+  # ---- 二类：读取密钥后向非信任域外发 ----
+  - id: deny_secret_exfiltration
+    priority: 100
+    when:
+      all:
+        - action_is: net.fetch
+        - destination_trust: external
+        - payload_has_label: [secret, credential]
+    decision: BLOCK
+    reason: 当前会话读取的敏感内容不得发往非信任目的地
+
+  # ---- 三类：危险命令模式（规范化后有界解码再匹配）----
+  - id: deny_dangerous_command
+    priority: 100
+    when:
+      all:
+        - action_is: exec.run
+        - any:
+            - command_pattern: "\\bcurl\\b[^;|&]*(?:\\||;|&&)"
+            - command_pattern: "\\bwget\\b[^;|&]*(?:\\||;|&&)"
+            - command_pattern: "(?:base64|openssl enc)[^|]*\\|\\s*(?:sh|bash)"
+            - command_pattern: "rm\\s+-rf\\s+/(?:\\s|$)"
+    decision: BLOCK
+    reason: 禁止远程下载管道执行、解码后执行等危险命令模式
+
+  # ---- 四类：代码检视任务禁止推送 / 未授权推送 ----
+  - id: deny_review_push
+    priority: 95
+    when:
+      all:
+        - action_is: git.push
+        - mission_goal_is: code_review
+    decision: BLOCK
+    reason: 代码检视任务未授权推送
+
+  - id: deny_unauthorized_push
+    priority: 95
+    when:
+      all:
+        - action_is: git.push
+        - not: {mission_flag: allow_push}
+    decision: BLOCK
+    reason: 任务未授权 git.push
+
+  # ---- 五类：向子 Agent 传递密钥 / 能力越权派发 ----
+  - id: deny_subagent_secret
+    priority: 100
+    when:
+      all:
+        - action_is: agent.spawn
+        - payload_has_label: [secret, credential]
+    decision: BLOCK
+    reason: 禁止向子 Agent 传递当前会话中的密钥或凭证
+
+  - id: deny_capability_escalation
+    priority: 95
+    when:
+      all:
+        - action_is: agent.spawn
+        - agent_capability_subset: false
+    decision: BLOCK
+    reason: 子 Agent 可用能力必须是父任务能力的子集，由网关签发
+
+  # ---- 需确认：写入目标与任务语义关系不明确 ----
+  - id: confirm_unplanned_write
+    priority: 40
+    when:
+      all:
+        - action_is: fs.write
+        - semantic_task_relation: uncertain
+    decision: CONFIRM
+    reason: 写入目标与原始任务的关系不明确，需用户确认

@@ -35,6 +35,8 @@ from guard.gateway.session import GatewaySession  # noqa: E402
 from guard.llm.client import LLMClient  # noqa: E402
 from guard.llm.config import load_providers, resolve_provider  # noqa: E402
 from guard.policy.approval import decide_approval  # noqa: E402
+from guard.policy.dsl import compile_policy_file  # noqa: E402
+from guard.policy.engine import PolicyEngine  # noqa: E402
 from guard.sandbox.spec import SandboxSpec  # noqa: E402
 from guard.semantic.analyzer import SemanticAnalyzer  # noqa: E402
 
@@ -125,15 +127,22 @@ def _assert_call(call: dict, entry: dict) -> list[str]:
     return failures
 
 
-def run_direct_scenario(scenario: dict, store: AuditStore) -> int:
+def run_direct_scenario(scenario: dict, store: AuditStore) -> tuple[int, dict]:
     """direct 模式：不经 LLM 与 Docker，直接断言网关裁决（确定性验收）。
 
     每条 call 结构：
       {tool, arguments, expect_decision: BLOCK|CONFIRM|ALLOW,
        expect_rules: [rule_id], expect_executed: bool}
     pre_read 可先执行读取以加载污点标签（exact_bytes）。
+    scenario["policy"] 可指定相对仓库根的策略文件（如 CVE 复现场景），
+    缺省用 settings.policy_file。
+    返回 (退出码, {"trace_id", "session_id", "call_log", "failures"})。
     """
     mission = scenario["mission"]
+    policy_engine = None
+    if scenario.get("policy"):
+        policy_engine = PolicyEngine(
+            compile_policy_file(PROJECT_ROOT / scenario["policy"]))
     session = GatewaySession.create(
         store, settings.workspaces_root,
         user_id="demo-user",
@@ -141,6 +150,7 @@ def run_direct_scenario(scenario: dict, store: AuditStore) -> int:
         goal_category=mission.get("goal_category", "general"),
         allow_exfiltration=mission.get("allow_exfiltration", False),
         allow_push=mission.get("allow_push", False),
+        policy_engine=policy_engine,
     )
     seed_workspace(session.workspace_root, scenario.get("seed_files"))
     seed_content(session.workspace_root, scenario.get("seed_content"))
@@ -239,13 +249,19 @@ def run_direct_scenario(scenario: dict, store: AuditStore) -> int:
         if "call_received" not in types or "decision_made" not in types:
             failures.append(f"{call['tool']} 审计不完整（call/decision 事件缺失）: {types}")
 
+    info = {
+        "trace_id": session.trace_id,
+        "session_id": session.mission.session_id,
+        "call_log": call_log,
+        "failures": failures,
+    }
     if failures:
         print(f"[{scenario['id']}] 验收失败:")
         for f in failures:
             print(f"  - {f}")
-        return 1
+        return 1, info
     print(f"[{scenario['id']}] 验收通过")
-    return 0
+    return 0, info
 
 
 def run_scenario(scenario_path: Path, store: AuditStore | None = None) -> int:
@@ -257,7 +273,7 @@ def run_scenario(scenario_path: Path, store: AuditStore | None = None) -> int:
         store = AuditStore(settings.db_path)
 
     if scenario.get("mode") == "direct":
-        rc = run_direct_scenario(scenario, store)
+        rc, _info = run_direct_scenario(scenario, store)
         if own_store:
             store.close()
         return rc
