@@ -1,0 +1,71 @@
+# Agent Guard 独立安全控制台
+
+控制台全部位于 `console/`。不改动 `guard/`、默认策略、审计表结构或原有网关 API；无需 LLM、Docker，也不会启动 Agent 或重跑任何实验。
+
+## 启动
+
+已有前端依赖时，构建一次：
+
+```bash
+cd console
+npm run build
+```
+
+缺少依赖时先在 `console/` 执行 `npm install`。前端沿用现有 React、Vite、React Flow，没有新增 npm 依赖；Python 服务复用项目已有依赖。
+
+从项目根目录启动独立服务：
+
+```bash
+uv run python console/server.py
+```
+
+浏览器打开 **http://127.0.0.1:8001**。服务同时提供构建后的页面和只读数据 API，原网关无需启动。
+
+指定已有审计库或策略文件：
+
+```bash
+uv run python console/server.py --db docs/cve_reproduction.db --policy policies/cve_repro.yaml
+```
+
+默认读取项目根目录的 `agent-guard.db` 和 `policies/default.yaml`。也支持 `AGENT_GUARD_DB_PATH`、`AGENT_GUARD_POLICY_FILE`；`--db` / `--policy` 优先。审计库不存在时不创建数据库，页面显示缺失状态，历史对抗报告仍然可读。
+
+## 开发方式
+
+一个终端从根目录运行 `uv run python console/server.py`，另一个终端在 `console/` 运行 `npm run dev`，打开 Vite 打印的本地地址。Vite 将 `/api` 原样代理到 `127.0.0.1:8001`，与旧网关端口 8000 分开。
+
+独立服务端口可由 `--port` 修改；开发时同步修改 `vite.config.ts` 的代理目标。构建后由独立服务同源提供页面，无需 Vite 或 CORS。
+
+## 页面与数据来源
+
+| 页面 | 可视化内容 | 数据依据 |
+| --- | --- | --- |
+| 安全总览 | 会话、三态决策、活动分布、内容来源、高频命中规则 | 当前审计库全库统计；近期列表最多 200 条 Trace |
+| 多源注入识别 | 直接 / 间接 / 记忆分类、信任级别、敏感标签、来源继承、证据引述 | sources、data_labels、审计事件 |
+| 意图与工具对齐 | 冻结目标、候选调用、偏离判定、模型置信度、引用来源 | mission_versions、calls、semantic_analyzed 事件 |
+| 策略与三态裁决 | DSL 条件、优先级、规则命中、调用参数、批准状态 | 当前磁盘策略、历史 decisions、approvals |
+| 攻击链路溯源 | 可缩放点击的 DAG、Agent / MCP 关联、时序筛选、已执行目标、证据导出 | 复用原有 DAG 重建算法；只读审计数据 |
+| 对抗鲁棒性 | 三 arm 对比、攻击与正常任务指标、七类绕过样例、CVE 关联场景 | docs/bankfull_*_shard*.json、docs/report.md、攻击语料 YAML、docs/cve_reproduction.json |
+
+## 数据边界
+
+- 服务使用 SQLite `mode=ro` 和 `query_only` 读取既有数据库，不实例化会创建/迁移表的 `AuditStore`。复用的 `guard.audit.trace` / `redact` 仅用于只读重建与展示。
+- 接口不提供策略修改、调用执行或批准操作。原有系统继续生成审计记录后，可手动刷新，也可勾选每 15 秒更新。
+- 内容经过现有脱敏器及控制台补充脱敏；默认不返回模型完整请求/响应。工具结果以原审计保留内容为限。
+- “需要确认决策”统计历史裁决次数，不等于当前待批准数量；批准记录分别展示状态与有效期。全库计数与当前会话计数明确区分。
+- 当前磁盘策略不代表历史会话生效版本；历史裁决单独展示保存的策略版本。
+- 来源原文、文本区间、执行计划等未被原审计保存时显示“未记录”，不合成 token 级定位或未知检测结果。
+- 图中虚线为推断关联，实线为观测关联。已执行目标含合法只读访问，不能直接当作受害资源。
+- 抗绕过矩阵只表示配置语料是否有历史报告记录；不会把语料存在视作已经通过。银行实验同时展示攻击成功率与合法任务完成率。
+- CVE 数据为关联攻击模式的工具调用层验证，不能当成原产品真实漏洞复现。
+- “演示场景”是前端内存中的合成数据，始终有显著标识，不写入数据库，也不填充真实实验指标。后端断开时可以手动切换演示；不会静默冒充在线结果。
+
+## 模块文件
+
+- `server.py`：独立只读 API、报告汇总和构建产物托管。
+- `src/App.tsx`：导航、连接状态、数据模式和刷新。
+- `src/pages.tsx`：总览与五项能力页面。
+- `src/TraceGraph.tsx`、`SequenceDiagram.tsx`：交互式链路图、节点证据与调用时序图。
+- `src/components.tsx`、`types.ts`、`lib.ts`：展示组件、数据契约和格式化。
+- `src/demo.ts`：明确标识的离线演示场景。
+
+本次按要求未运行测试；已执行前端构建，生成供独立服务托管的静态文件。
