@@ -82,3 +82,14 @@ uv run python console/server.py --db docs/cve_reproduction.db --policy policies/
 - 页面标明实验时间、版本未知、修正前矩阵等边界；证据清单附当前文件 SHA-256，可导出完整 JSON，支持展示模式（Esc 退出）与浏览器打印/PDF。
 
 修改后重新 `npm.cmd run build` 并重启 Python 控制台服务。Windows 已配置本地虚拟环境时也可使用 `.venv\Scripts\python.exe console/server.py`，避免每次启动触发环境同步。
+
+
+## CVE 攻击轨迹图
+
+在“报告展示 → 05 CVE 攻击轨迹”或“对抗鲁棒性 → CVE 攻击轨迹可视化”查看。读取现有 `docs/cve_reproduction.json`，不需要审计数据库。
+
+- 支持切换 5 个历史 CVE 关联场景，缩放、平移、小地图、点击节点和上/下一个调用。
+- 每行以一条原始调用为单位，分为候选工具、安全裁决、实际执行三列；实线仅关联同一调用的字段，不推断跨调用因果。
+- 场景设计中的攻击步骤单独列出，与实际调用记录分开。未提供的时间戳、来源影响关系和完整 DAG 不补造。
+- 证据详情展示参数、原因、规则、executed/ok，支持导出当前场景 JSON。拒绝构造、BLOCK、CONFIRM 与执行失败分别保留。
+- 这些是专用策略下的工具调用层模式验证，不等同于真实漏洞产品复现，也不经过 LLM 或 Docker。
