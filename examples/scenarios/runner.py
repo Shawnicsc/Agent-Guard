@@ -29,6 +29,7 @@ from guard.contracts import (  # noqa: E402
     ContentSource,
     EventType,
     ProtectionMode,
+    RunContext,
     SourceType,
     content_hash,
 )
@@ -131,9 +132,20 @@ def _assert_call(call: dict, entry: dict,
     return failures
 
 
+def _scenario_context(scenario: dict, provided: RunContext | None) -> RunContext:
+    values = {**scenario.get("run_context", {}),
+              **(provided.model_dump(exclude_none=True, exclude_unset=True) if provided else {})}
+    if not values.get("batch_id"):
+        values.setdefault("origin", "demo")
+        values.setdefault("application", "scenario-runner")
+    values.setdefault("case_id", scenario["id"])
+    return RunContext(**values)
+
+
 def run_direct_scenario(scenario: dict, store: AuditStore, *,
                         semantic_provider: str | None = None,
                         protection_mode: ProtectionMode = ProtectionMode.ENFORCE,
+                        run_context: RunContext | None = None,
                         ) -> tuple[int, dict]:
     """direct 模式：直接构造调用，不启动 Docker；semantic 场景可调用研判模型。
 
@@ -159,6 +171,7 @@ def run_direct_scenario(scenario: dict, store: AuditStore, *,
         allow_push=mission.get("allow_push", False),
         policy_engine=policy_engine,
         protection_mode=protection_mode,
+        run_context=_scenario_context(scenario, run_context),
     )
     seed_workspace(session.workspace_root, scenario.get("seed_files"))
     seed_content(session.workspace_root, scenario.get("seed_content"))
@@ -274,10 +287,12 @@ def run_direct_scenario(scenario: dict, store: AuditStore, *,
 
 def run_scenario(scenario_path: Path, store: AuditStore | None = None, *,
                  task_provider: str | None = None, semantic_provider: str | None = None,
-                 protection_mode: ProtectionMode | None = None) -> int:
+                 protection_mode: ProtectionMode | None = None,
+                 run_context: RunContext | None = None) -> int:
     scenario = yaml.safe_load(scenario_path.read_text())
     mission = scenario["mission"]
     mode = ProtectionMode(protection_mode or settings.protection_mode)
+    run_context = _scenario_context(scenario, run_context)
 
     own_store = store is None
     if own_store:
@@ -285,7 +300,7 @@ def run_scenario(scenario_path: Path, store: AuditStore | None = None, *,
 
     if scenario.get("mode") == "direct":
         rc, _info = run_direct_scenario(scenario, store, semantic_provider=semantic_provider,
-                                      protection_mode=mode)
+                                      protection_mode=mode, run_context=run_context)
         if own_store:
             store.close()
         return rc
@@ -299,6 +314,7 @@ def run_scenario(scenario_path: Path, store: AuditStore | None = None, *,
         allow_exfiltration=mission.get("allow_exfiltration", False),
         allow_push=mission.get("allow_push", False),
         protection_mode=mode,
+        run_context=run_context,
     )
     seed_workspace(session.workspace_root, scenario.get("seed_files"))
     seed_content(session.workspace_root, scenario.get("seed_content"))
@@ -354,7 +370,18 @@ if __name__ == "__main__":
     parser.add_argument("--semantic-provider", help="独立的语义审计模型，默认 deepseek")
     parser.add_argument("--protection", choices=[mode.value for mode in ProtectionMode],
                         help="enforce 拦截 / monitor 只审计放行 / off 关闭保护")
+    parser.add_argument("--batch-id", help="关联已有运行批次")
+    parser.add_argument("--dataset-id", help="数据集 ID")
+    parser.add_argument("--dataset-version", help="数据集版本")
+    parser.add_argument("--application", help="应用名称")
+    parser.add_argument("--origin", choices=["production", "evaluation", "demo"])
     args = parser.parse_args()
     sys.exit(run_scenario(args.scenario, task_provider=args.task_provider,
                           semantic_provider=args.semantic_provider,
-                          protection_mode=args.protection))
+                          protection_mode=args.protection,
+                          run_context=RunContext(**{key: value for key, value in {
+                              "batch_id": args.batch_id, "dataset_id": args.dataset_id,
+                              "dataset_version": args.dataset_version,
+                              "application": args.application, "origin": args.origin,
+                          }.items() if value is not None}) if any((args.batch_id, args.dataset_id,
+                              args.dataset_version, args.application, args.origin)) else None))

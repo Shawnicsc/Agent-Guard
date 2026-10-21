@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from guard.audit.trace import rebuild_dag
 from guard.config import settings
-from guard.contracts import Decision
+from guard.contracts import Decision, RunContext
 from guard.gateway.session import MAIN_AGENT_ID, GatewaySession
 from guard.policy.approval import decide_approval
 from guard.policy.dsl import compile_policy_text
@@ -29,6 +29,7 @@ class CreateSessionBody(BaseModel):
     allowed_actions: list[str] = Field(default_factory=list)
     allow_exfiltration: bool = False
     allow_push: bool = False
+    run_context: RunContext | None = None
 
 
 class DecideBody(BaseModel):
@@ -51,7 +52,21 @@ def health(request: Request) -> dict:
 
 @router.post("/sessions")
 def create_session(body: CreateSessionBody, request: Request) -> dict:
-    session = GatewaySession.create(
+    try:
+        session = _create_session(body, request)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    request.app.state.sessions[session.mission.session_id] = session
+    return {
+        "session_id": session.mission.session_id,
+        "trace_id": session.trace_id,
+        "mission": session.mission.model_dump(mode="json"),
+        "run_context": session.run_context,
+    }
+
+
+def _create_session(body: CreateSessionBody, request: Request) -> GatewaySession:
+    return GatewaySession.create(
         request.app.state.store,
         settings.workspaces_root,
         user_id=body.user_id,
@@ -63,13 +78,21 @@ def create_session(body: CreateSessionBody, request: Request) -> dict:
         allowed_actions=body.allowed_actions or None,
         allow_exfiltration=body.allow_exfiltration,
         allow_push=body.allow_push,
+        run_context=body.run_context,
     )
-    request.app.state.sessions[session.mission.session_id] = session
-    return {
-        "session_id": session.mission.session_id,
-        "trace_id": session.trace_id,
-        "mission": session.mission.model_dump(mode="json"),
-    }
+
+
+class CreateBatchBody(BaseModel):
+    user_id: str
+    run_context: RunContext = Field(default_factory=RunContext)
+
+
+@router.post("/run-batches")
+def create_run_batch(body: CreateBatchBody, request: Request) -> dict:
+    try:
+        return request.app.state.store.register_run(body.user_id, body.run_context)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.post("/tool-calls/decide")

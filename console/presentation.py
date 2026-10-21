@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
@@ -26,7 +27,8 @@ def build_presentation(root: Path) -> dict:
     def read(path: Path):
         raw = path.read_bytes()
         value = json.loads(raw.decode('utf-8'))
-        files.append({'name': path.name, 'sha256': hashlib.sha256(raw).hexdigest()})
+        files.append({'name': path.name, 'sha256': hashlib.sha256(raw).hexdigest(),
+                      'updated_at': datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat()})
         return value
 
     for arm in ('direct', 'agent_guard_monitor', 'agent_guard'):
@@ -72,9 +74,22 @@ def build_presentation(root: Path) -> dict:
             'block_runs': sum(run['has_block'] for run in selected),
             'ci': None if unknown else wilson(successes, len(selected)),
         })
+    cves = []
+    try:
+        cases = read(root / 'docs/cve_reproduction.json')
+        if not isinstance(cases, list) or not all(
+                isinstance(case, dict) and isinstance(case.get('cve'), dict)
+                and isinstance(case.get('calls'), list) for case in cases):
+            raise ValueError('CVE 存档格式错误')
+        cves = cases
+    except (OSError, ValueError, TypeError) as exc:
+        warnings.append(f'CVE 数据: {exc}')
+
     rehearsal = {'runs': [], 'summary': {}, 'tasks': {}}
+    rehearsal_date = '原始运行未记录日期'
     try:
         data = read(root / 'docs/rehearsal_stage3_eval.json')
+        rehearsal_date = data.get('timestamp') or rehearsal_date
         rehearsal['runs'] = [{key: run.get(key) for key in (
             'task', 'cell', 'payload', 'completed', 'refused', 'elapsed_s', 'agent_tokens',
             'calls', 'manifested', 'summary', 'trace_id', 'rehearsal_events', 'attributed_blocks',
@@ -98,8 +113,11 @@ def build_presentation(root: Path) -> dict:
                               for t in task_data.get('tasks', [])}
     except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError) as exc:
         warnings.append(f'彩排数据: {exc}')
-    return {'arms': arms, 'runs': runs, 'rehearsal': rehearsal, 'files': files,
+    bank_dates = sorted({str(item['timestamp'])[:10] for item in metadata if item['timestamp']})
+    return {'arms': arms, 'runs': runs, 'rehearsal': rehearsal, 'cves': cves, 'files': files,
             'metadata': metadata, 'warnings': warnings,
-            'provenance': {'kind': '历史真实实验', 'commit': '原始运行未记录提交 SHA',
-                           'bank_date': '2026-10-19', 'rehearsal_date': '2026-10-20',
-                           'rehearsal_revision': '64 次矩阵为修正前代码；修正后仅单任务复测，未混入本页统计'}}
+            'provenance': {'kind': '历史报告存档', 'commit': '原始运行未记录提交 SHA',
+                           'bank_date': ' 至 '.join(dict.fromkeys((bank_dates[0], bank_dates[-1])))
+                           if bank_dates else '原始运行未记录日期',
+                           'rehearsal_date': rehearsal_date,
+                           'rehearsal_revision': '彩排统计来自存档，不代表当前代码的重新评测结果'}}

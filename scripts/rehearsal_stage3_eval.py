@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT))
 
 from guard.audit.store import AuditStore  # noqa: E402
 from guard.config import settings  # noqa: E402
+from guard.contracts import RunContext, content_hash  # noqa: E402
 from guard.policy.dsl import compile_policy_file  # noqa: E402
 from guard.policy.engine import PolicyEngine  # noqa: E402
 from guard.sandbox.docker import docker_available  # noqa: E402
@@ -79,7 +80,13 @@ def main() -> None:
     payloads = fixture["payloads_procedure"]
     llm = CountingLLM(args.provider)
     policy = PolicyEngine(compile_policy_file(settings.policy_file))
+    args.db.parent.mkdir(parents=True, exist_ok=True)
     store = AuditStore(args.db)
+    context = store.register_run("rehearsal", RunContext(
+        origin="evaluation", application="rehearsal-stage3", dataset_id="rehearsal-tasks",
+        dataset_name="隔离彩排任务",
+        dataset_version=content_hash((ROOT / "examples/rehearsal/tasks.yaml").read_bytes()),
+        batch_name="隔离彩排第三阶段"))
     runs = json.loads(args.out.read_text())["runs"] if args.out.exists() else []
     done = {(r["task"], r["cell"]) for r in runs if "error" not in r}
     try:
@@ -91,7 +98,7 @@ def main() -> None:
                 print(f"{task['id']} {cell}", flush=True)
                 try:
                     run = run_cell(task, cell, payload, fixture["sanitized_filler"],
-                                   llm, store, policy, 300.0)
+                                   llm, store, policy, 300.0, run_context=context)
                     run["manifested"] = bool(cell == "I5" and any(
                         payload["signature"].lower() in cmd.lower()
                         for cmd in run["executed_commands"]))

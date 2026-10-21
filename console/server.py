@@ -16,7 +16,7 @@ from collections import Counter
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import uvicorn
 import yaml
@@ -26,9 +26,10 @@ from fastapi.responses import FileResponse, PlainTextResponse
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from console.presentation import build_presentation  # noqa: E402
+from guard.audit.history import query_history  # noqa: E402
 from guard.audit.redact import redact_payload, redact_text  # noqa: E402
 from guard.audit.trace import rebuild_dag  # noqa: E402
-from console.presentation import build_presentation  # noqa: E402
 
 REPORTS = {
     "report.md", "bankfull_banking_report.md", "cve_reproduction_report.md",
@@ -117,7 +118,8 @@ def traces(connection: sqlite3.Connection) -> list[dict]:
             "SELECT d.action, COUNT(*) FROM decisions d JOIN calls c ON c.call_id = d.call_id "
             "WHERE c.trace_id = ? GROUP BY d.action", (row["trace_id"],)
         ).fetchall())
-        item.update(goal=decode(mission[0], {}).get("goal", "未记录任务目标") if mission else "未记录任务目标",
+        goal = decode(mission[0], {}).get("goal", "未记录任务目标") if mission else "未记录任务目标"
+        item.update(goal=goal,
                     counts=counts,
                     call_count=connection.execute(
                         "SELECT COUNT(*) FROM calls WHERE trace_id = ?", (row["trace_id"],)
@@ -300,6 +302,26 @@ def create_console(db_path: Path, policy_path: Path) -> FastAPI:
     def presentation():
         return sanitize(build_presentation(ROOT))
 
+    @app.get("/api/console/history")
+    def history(group_by: Literal["day", "month"] = "day", timezone: str = "Asia/Shanghai",
+                start: str | None = None, end: str | None = None, period: str | None = None,
+                origin: str | None = None, application: str | None = None,
+                dataset_id: str | None = None, batch_id: str | None = None,
+                search: str = "", include_shadow: bool = False,
+                page: int = 1, page_size: int = 25, export_all: bool = False):
+        try:
+            with database(db_path) as connection:
+                return sanitize(query_history(
+                    connection, group_by=group_by, timezone=timezone, start=start, end=end,
+                    period=period, origin=origin, application=application,
+                    dataset_id=dataset_id, batch_id=batch_id, search=search,
+                    include_shadow=include_shadow, page=page, page_size=page_size,
+                    export_all=export_all))
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except (OSError, sqlite3.Error) as exc:
+            raise HTTPException(503, str(exc)) from exc
+
     @app.get("/api/incidents")
     def list_incidents():
         try:
@@ -336,7 +358,8 @@ def create_console(db_path: Path, policy_path: Path) -> FastAPI:
             raise HTTPException(404, "静态资源不存在")
         if (dist / "index.html").is_file():
             return FileResponse(dist / "index.html")
-        return PlainTextResponse("前端尚未构建。请在 console/ 运行 npm run build，或启动 npm run dev。", 503)
+        return PlainTextResponse(
+            "前端尚未构建。请在 console/ 运行 npm run build，或启动 npm run dev。", 503)
 
     return app
 
@@ -346,8 +369,10 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8001)
     parser.add_argument("--db", type=Path,
-                        default=Path(os.environ.get("AGENT_GUARD_DB_PATH", ROOT / "agent-guard.db")))
+                        default=Path(os.environ.get(
+                            "AGENT_GUARD_DB_PATH", ROOT / "agent-guard.db")))
     parser.add_argument("--policy", type=Path,
-                        default=Path(os.environ.get("AGENT_GUARD_POLICY_FILE", ROOT / "policies/default.yaml")))
+                        default=Path(os.environ.get(
+                            "AGENT_GUARD_POLICY_FILE", ROOT / "policies/default.yaml")))
     args = parser.parse_args()
     uvicorn.run(create_console(args.db, args.policy), host=args.host, port=args.port)

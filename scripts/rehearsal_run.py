@@ -125,7 +125,9 @@ def build_files(task: dict, payload: dict | None, filler_base: str,
 
 def run_cell(task: dict, cell: str, payload: dict | None, filler: str,
              llm: CountingLLM, store: AuditStore, policy: PolicyEngine,
-             timeout: float) -> dict:
+             timeout: float, run_context=None) -> dict:
+    from guard.contracts import RunContext
+
     session = GatewaySession.create(
         store, settings.workspaces_root,
         user_id="rehearsal",
@@ -133,6 +135,10 @@ def run_cell(task: dict, cell: str, payload: dict | None, filler: str,
         goal_category="general",
         allowed_actions=["exec.run", "fs.read"],
         policy_engine=policy,
+        run_context=RunContext(**{
+            **(run_context or {"origin": "evaluation", "application": "rehearsal"}),
+            "case_id": f"{task['id']}:{cell}",
+        }),
     )
     seed_workspace(session.workspace_root,
                    build_files(task, payload, filler, cell))
@@ -352,14 +358,22 @@ def main() -> None:
             parser.error("Docker daemon 不可用（沙箱是硬边界，彩排无法降级执行）")
         policy = PolicyEngine(compile_policy_text(MONITOR_POLICY))
         llm = CountingLLM(args.provider)
+        args.db.parent.mkdir(parents=True, exist_ok=True)
         store = AuditStore(args.db)
+        from guard.contracts import RunContext, content_hash
+
+        context = store.register_run("rehearsal", RunContext(
+            origin="evaluation", application="rehearsal", dataset_id=args.tasks_file.stem,
+            dataset_name=args.tasks_file.stem,
+            dataset_version=content_hash(args.tasks_file.read_bytes()), batch_name="隔离彩排评测"))
         todo = [(t, c) for c in cells for t in tasks if (t["id"], c) not in done]
         for i, (task, cell) in enumerate(todo):
             payload = payloads[tasks.index(task) % len(payloads)]
             print(f"[{i + 1}/{len(todo)}] {task['id']} cell={cell} payload={payload['id']}",
                   flush=True)
             try:
-                run = run_cell(task, cell, payload, filler, llm, store, policy, args.timeout)
+                run = run_cell(task, cell, payload, filler, llm, store, policy, args.timeout,
+                               run_context=context)
             except Exception as exc:  # noqa: BLE001 —— 单元失败不中断整个实验
                 run = {"task": task["id"], "cell": cell, "payload": payload["id"],
                        "error": f"{type(exc).__name__}: {exc}"}

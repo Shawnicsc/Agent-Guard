@@ -3,6 +3,7 @@ import { Background, Controls, MarkerType, Position, ReactFlow, type Edge, type 
 import { Badge, Empty, Icon, JsonView, Note, Panel } from './components';
 import { downloadJson } from './lib';
 import type { CveCase } from './types';
+import { useTheme } from './Theme';
 import './cve-trajectory.css';
 
 type CveCall = CveCase['calls'][number];
@@ -12,26 +13,27 @@ function execution(call: CveCall) {
   if (call.executed === true && call.ok === false) return { label: '已执行 · 返回失败', tone: 'failed', detail: 'executed=true · ok=false' };
   return { label: '执行结果未知', tone: 'unknown', detail: '缺少明确的 executed / ok 字段' };
 }
-function trajectory(cve: CveCase, selected: number) {
+function trajectory(cve: CveCase, selected: number, accent: string) {
   const nodes: Node[] = [], edges: Edge[] = [];
   cve.calls.forEach((call, index) => {
     const result = execution(call), y = index * 155;
     const items = [
-      { stage: 'call', x: 0, eyebrow: `调用 ${String(index + 1).padStart(2, '0')}`, label: call.tool, detail: '点击查看原始参数', color: '#6684a0', tone: 'candidate' },
-      { stage: 'decision', x: 325, eyebrow: '安全裁决', label: call.decision || '未记录', detail: call.rule_ids?.join(' · ') || '未记录规则 ID', color: call.decision === 'BLOCK' ? '#b76558' : call.decision === 'CONFIRM' ? '#b28a3f' : '#528767', tone: call.decision?.toLowerCase() || 'unknown' },
-      { stage: 'result', x: 650, eyebrow: '执行记录', label: result.label, detail: result.detail, color: result.tone === 'stopped' ? '#b76558' : result.tone === 'executed' ? '#528767' : '#b28a3f', tone: result.tone },
+      { stage: 'call', x: 0, eyebrow: `调用 ${String(index + 1).padStart(2, '0')}`, label: call.tool, detail: '点击查看原始参数', color: accent, tone: 'candidate' },
+      { stage: 'decision', x: 325, eyebrow: '安全裁决', label: call.decision || '未记录', detail: call.rule_ids?.join(' · ') || '未记录规则 ID', color: call.decision === 'BLOCK' ? '#be3455' : call.decision === 'CONFIRM' ? '#b7791f' : '#059669', tone: call.decision?.toLowerCase() || 'unknown' },
+      { stage: 'result', x: 650, eyebrow: '执行记录', label: result.label, detail: result.detail, color: result.tone === 'stopped' ? '#be3455' : result.tone === 'executed' ? '#059669' : '#b7791f', tone: result.tone },
     ];
     items.forEach(item => nodes.push({
       id: `${item.stage}-${index}`, position: { x: item.x, y }, sourcePosition: Position.Right, targetPosition: Position.Left,
       data: { callIndex: index, stage: item.stage, label: <div className={`cve-graph-node ${item.tone}`}><span>{item.eyebrow}</span><strong>{item.label}</strong><small title={item.detail}>{item.detail}</small></div> },
-      style: { width: 250, borderColor: item.color, borderWidth: selected === index ? 2 : 1, boxShadow: selected === index ? `0 0 0 3px ${item.color}22` : 'none', background: item.tone === 'block' || item.tone === 'stopped' ? '#fff6f2' : '#fff' },
+      style: { width: 250, borderColor: item.color, borderWidth: selected === index ? 2 : 1, boxShadow: selected === index ? `0 0 0 3px ${item.color}22` : 'none', background: item.tone === 'block' || item.tone === 'stopped' ? '#fff1f2' : '#fff' },
     }));
-    edges.push({ id: `judged-${index}`, source: `call-${index}`, target: `decision-${index}`, type: 'smoothstep', label: '同一调用', markerEnd: { type: MarkerType.ArrowClosed, color: '#9bafa1' }, style: { stroke: '#9bafa1', strokeWidth: 1.6 } });
-    edges.push({ id: `result-${index}`, source: `decision-${index}`, target: `result-${index}`, type: 'smoothstep', label: call.executed === false ? '未执行记录' : '执行记录', markerEnd: { type: MarkerType.ArrowClosed, color: result.tone === 'stopped' ? '#bc7866' : '#9bafa1' }, style: { stroke: result.tone === 'stopped' ? '#bc7866' : '#9bafa1', strokeWidth: 1.6 } });
+    edges.push({ id: `judged-${index}`, source: `call-${index}`, target: `decision-${index}`, type: 'smoothstep', label: '同一调用', markerEnd: { type: MarkerType.ArrowClosed, color: '#a1aec8' }, style: { stroke: '#a1aec8', strokeWidth: 1.6 } });
+    edges.push({ id: `result-${index}`, source: `decision-${index}`, target: `result-${index}`, type: 'smoothstep', label: call.executed === false ? '未执行记录' : '执行记录', markerEnd: { type: MarkerType.ArrowClosed, color: result.tone === 'stopped' ? '#e47791' : '#a1aec8' }, style: { stroke: result.tone === 'stopped' ? '#e47791' : '#a1aec8', strokeWidth: 1.6 } });
   });
   return { nodes, edges };
 }
 function CveGraph({ cve }: { cve: CveCase }) {
+  const { palette } = useTheme();
   const [selected, setSelected] = useState(0);
   const container = useRef<HTMLDivElement>(null);
   const flow = useRef<ReactFlowInstance | null>(null);
@@ -41,12 +43,12 @@ function CveGraph({ cve }: { cve: CveCase }) {
     observer.observe(container.current);
     return () => observer.disconnect();
   }, []);
-  const graph = useMemo(() => trajectory(cve, selected), [cve, selected]);
+  const graph = useMemo(() => trajectory(cve, selected, palette.accent), [cve, selected, palette.accent]);
   const call = cve.calls[selected];
   if (!call) return <Empty title="该场景未保存工具调用记录" />;
   const result = execution(call);
   return <><div className="cve-graph-toolbar"><div className="cve-lane-labels"><span>01 候选工具调用</span><span>02 安全裁决</span><span>03 实际执行记录</span></div><div className="cve-step-controls"><button className="icon-button" aria-label="上一个 CVE 调用" disabled={!selected} onClick={() => setSelected(v => v - 1)}>←</button><span>调用 {selected + 1} / {cve.calls.length}</span><button className="icon-button" aria-label="下一个 CVE 调用" disabled={selected === cve.calls.length - 1} onClick={() => setSelected(v => v + 1)}>→</button></div></div>
-    <div className="cve-graph-canvas" ref={container}><ReactFlow nodes={graph.nodes} edges={graph.edges} fitView fitViewOptions={{ padding: .15 }} minZoom={.2} maxZoom={1.8} nodesDraggable={false} nodesConnectable={false} onInit={instance => { flow.current = instance; }} onNodeClick={(_, node) => setSelected(Number(node.data.callIndex))} proOptions={{ hideAttribution: true }} aria-label={`${cve.cve.id} 工具调用攻击轨迹图`}><Background gap={22} color="#dce6dc" /><Controls showInteractive={false} /></ReactFlow></div>
+    <div className="cve-graph-canvas" ref={container}><ReactFlow nodes={graph.nodes} edges={graph.edges} fitView fitViewOptions={{ padding: .15 }} minZoom={.2} maxZoom={1.8} nodesDraggable={false} nodesConnectable={false} onInit={instance => { flow.current = instance; }} onNodeClick={(_, node) => setSelected(Number(node.data.callIndex))} proOptions={{ hideAttribution: true }} aria-label={`${cve.cve.id} 工具调用攻击轨迹图`}><Background gap={22} color={palette.soft} /><Controls showInteractive={false} /></ReactFlow></div>
     <div className="cve-graph-explanation"><span><i />实线：同一调用记录中的裁决与执行结果</span><span>每行一条调用 · 自上而下为 JSON 记录顺序 · 不表示调用之间的因果关系</span></div>
     <div className="cve-evidence-inspector"><div className="cve-inspector-heading"><div><h3>调用 {selected + 1} · {call.tool}</h3></div><Badge action={call.decision} /></div><div className="cve-evidence-grid"><div><h4>工具参数</h4><JsonView value={call.arguments} /></div><div><h4>裁决依据与执行结果</h4><p>{call.reason || '未记录裁决原因'}</p><div className="tags">{call.rule_ids?.length ? call.rule_ids.map(rule => <span className="tag mono" key={rule}>{rule}</span>) : <span className="tag">无规则 ID · 可能在工具注册或能力边界拒绝</span>}</div><div className={`cve-execution ${result.tone}`}><strong>{result.label}</strong><small>{result.detail}</small></div></div></div><details><summary>查看本条完整原始记录</summary><JsonView value={call} /></details></div>
   </>;

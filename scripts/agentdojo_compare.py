@@ -49,6 +49,7 @@ from guard.contracts import (  # noqa: E402
     ContentSource,
     DecisionAction,
     EventType,
+    RunContext,
     SourceType,
     content_hash,
 )
@@ -323,11 +324,12 @@ class GuardedRuntime(FunctionsRuntime):
 
 class GuardedPipeline(AgentPipeline):
     def __init__(self, elements, store: AuditStore, analyzer: SemanticAnalyzer,
-                 workspaces_root: Path) -> None:
+                 workspaces_root: Path, run_context: RunContext | None = None) -> None:
         super().__init__(elements)
         self.store = store
         self.analyzer = analyzer
         self.workspaces_root = workspaces_root
+        self.run_context = run_context or RunContext(origin="evaluation", application="agentdojo")
         self.runtime: GuardedRuntime | None = None
         self.name = MODEL
 
@@ -339,12 +341,14 @@ class GuardedPipeline(AgentPipeline):
                 self.store, self.workspaces_root, user_id="agentdojo-benchmark",
                 goal=query, allowed_resources=["mcp://agentdojo"],
                 allowed_actions=["mcp.call"], semantic_analyzer=self.analyzer,
+                run_context=self.run_context,
             )
         self.runtime = runtime
         return super().query(query, runtime, env, messages, extra_args or {})
 
 
-def make_pipeline(guarded: bool, store: AuditStore, workspaces_root: Path):
+def make_pipeline(guarded: bool, store: AuditStore, workspaces_root: Path,
+                  run_context: RunContext | None = None):
     local = BASE_URL.startswith("http://127.0.0.1:")
     agent_client = OpenAI(api_key=os.environ.get(API_KEY_ENV, "local"),
                           base_url=BASE_URL, timeout=300 if local else 90,
@@ -372,13 +376,13 @@ def make_pipeline(guarded: bool, store: AuditStore, workspaces_root: Path):
         max_retries=0 if local and GUARD_DETECTOR == "same" else 6,
         extra_body=detector_extra), GUARD_DETECTOR)
     pipeline = GuardedPipeline(elements, store, SemanticAnalyzer(semantic_client),
-                               workspaces_root)
+                               workspaces_root, run_context)
     return pipeline, llm
 
 
 def run_arm(suite, user_task, injection_task, injections, guarded, store,
-            workspaces_root, arm_name=None):
-    pipeline, llm = make_pipeline(guarded, store, workspaces_root)
+            workspaces_root, arm_name=None, run_context: RunContext | None = None):
+    pipeline, llm = make_pipeline(guarded, store, workspaces_root, run_context)
     llm.attack_goal = injection_task.GOAL if injection_task is not None else ""
     for value in injections.values():
         try:
@@ -509,6 +513,10 @@ def main() -> int:
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     store = AuditStore(args.output.with_suffix(".db"))
+    context = store.register_run("agentdojo-benchmark", RunContext(
+        origin="evaluation", application="agentdojo",
+        dataset_id=f"agentdojo:{args.pair_set}", dataset_name=f"AgentDojo {args.pair_set}",
+        dataset_version=BENCHMARK_VERSION, batch_name=args.output.stem))
     rows: list[dict] = []
     # 断点续跑：输出已存在的行（无 error 且覆盖本次 arm）直接复用，不重跑。
     completed: dict[tuple, dict] = {}
@@ -591,7 +599,11 @@ def main() -> int:
                                          arm in {"agent_guard", "agent_guard_monitor"},
                                          store,
                                          args.output.parent / "workspaces",
-                                         arm_name=arm)
+                                         arm_name=arm, run_context=RunContext(**{
+                                             **context,
+                                             "case_id": (f"{suite_name}/{user_id}/{injection_id}/"
+                                                         f"{attack_name}/{arm}"),
+                                         }))
                     except Exception as exc:  # 单次失败不拖垮整个分片
                         print(f"  {arm}: RUN-ERROR {exc}", flush=True)
                         result = {"arm": arm, "error": str(exc)[:300],

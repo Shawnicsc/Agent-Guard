@@ -29,6 +29,7 @@ from guard.contracts import (
     PropagationBasis,
     ProtectionMode,
     RehearsalFacts,
+    RunContext,
     SemanticFacts,
     SourceType,
     ToolCallEnvelope,
@@ -89,6 +90,7 @@ class GatewaySession:
         self.store = store
         self.protection_mode = ProtectionMode(protection_mode)
         self.mission = mission
+        self.run_context = store.session_run_context(mission.session_id)
         self.trace_id = trace_id
         self.agent_id = agent_id
         self.agent_capabilities = (agent_capabilities if agent_capabilities is not None
@@ -147,6 +149,7 @@ class GatewaySession:
         semantic_analyzer: SemanticAnalyzer | None = None,
         mcp_proxy: StdioMCPProxy | None = None,
         protection_mode: ProtectionMode = ProtectionMode.ENFORCE,
+        run_context: RunContext | None = None,
     ) -> GatewaySession:
         session_id = new_id("sess")
         trace_id = new_trace_id()
@@ -160,14 +163,17 @@ class GatewaySession:
             allow_exfiltration=allow_exfiltration,
             allow_push=allow_push,
         )
+        context = store.register_run(user_id, run_context)
         workspace_root = workspaces_root / session_id
         workspace_root.mkdir(parents=True, exist_ok=True)
-        store.save_session(session_id, user_id)
+        store.save_session(session_id, user_id, {
+            "run_context": context, "protection_mode": ProtectionMode(protection_mode).value,
+        })
         store.save_mission(mission)
         store.append_event(AuditEvent(
             trace_id=trace_id, type=EventType.SESSION_CREATED,
             session_id=session_id,
-            payload={"user_id": user_id,
+            payload={"user_id": user_id, "run_context": context,
                      "protection_mode": ProtectionMode(protection_mode).value},
         ))
         store.append_event(AuditEvent(

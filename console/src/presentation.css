@@ -10,6 +10,16 @@
 .report-hero-number strong { display: block; font-size: 56px; line-height: 1.1; font-weight: 500; letter-spacing: -.06em; color: #d1e9c4; font-variant-numeric: tabular-nums; }
 .report-hero-number span, .report-hero-number small { display: block; margin-top: 10px; font-size: 11px; color: #c4d9c7; }
 .report-hero-number small { font-size: 10px; color: #8fac98; }
+.history-report-catalog { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.history-report-card { display: grid; gap: 12px; min-width: 0; padding: 22px; text-align: left; color: #365d43; background: #fff; border: 1px solid #dfe7db; border-radius: 9px; }
+.history-report-card:hover, .history-report-card.active { border-color: #56836b; background: #f0f6ef; }
+.history-report-card h3 { margin: 0; font-size: 16px; }
+.history-report-count { display: flex; gap: 10px; align-items: baseline; }
+.history-report-count strong { font-size: 32px; font-weight: 550; font-variant-numeric: tabular-nums; }
+.history-report-count span, .history-report-card p { font-size: 12px; }
+.history-report-card small { font-size: 10px; color: #72846f; overflow-wrap: anywhere; }
+.history-report-link { font-size: 12px; color: #16806b; }
+@media (max-width: 800px) { .history-report-catalog { grid-template-columns: 1fr; } }
 .report-toolbar { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: center; }
 .report-tabs { background: #e9eeea; padding: 5px; border-radius: 8px; }
 .report-tabs button { font-size: 12px; padding: 10px 14px; }

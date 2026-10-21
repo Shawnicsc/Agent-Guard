@@ -453,7 +453,7 @@ uv run python scripts/cve_repro.py
 uv run pytest tests/test_cve_scenarios.py -q
 ```
 
-场景使用独立策略 `policies/cve_repro.yaml`，直接构造工具请求，验证与公开 CVE 相关的攻击模式。脚本默认重建 `docs/cve_reproduction.db`，生成 `docs/cve_reproduction.json` 与 [报告](docs/cve_reproduction_report.md)；追加记录可使用 `--keep-db`。
+场景使用独立策略 `policies/cve_repro.yaml`，直接构造工具请求，验证与公开 CVE 相关的攻击模式。脚本默认保留 `docs/cve_reproduction.db` 的历史审计，每次运行创建独立批次，生成 `docs/cve_reproduction.json` 与 [报告](docs/cve_reproduction_report.md)；`--keep-db` 继续兼容；使用 `--db` 可以写入指定审计库。
 
 此测试不调用真实模型或启动 Docker，也不在原产品上复现真实漏洞。
 
@@ -461,7 +461,7 @@ uv run pytest tests/test_cve_scenarios.py -q
 
 隔离彩排实验入口为 [scripts/rehearsal_run.py](scripts/rehearsal_run.py) 和 [scripts/rehearsal_stage3_eval.py](scripts/rehearsal_stage3_eval.py)，需要 Docker、模型服务和文件任务夹具。这些脚本有自己的 provider 与实验参数，不能直接把 Demo 的角色配置等同于实验配置。
 
-方法、边界和存档结果见 [彩排报告](docs/rehearsal_report.md)、[第三阶段报告](docs/rehearsal_stage3_report.md)。历史报告反映其记录的模型、样本与实验版本，运行一次 Demo 不会自动刷新这些指标。
+方法、边界和存档结果见 [彩排报告](docs/rehearsal_report.md)、[第三阶段报告](docs/rehearsal_stage3_report.md)。这些评测存档反映其记录的模型、样本与实验版本，运行一次 Demo 不会自动刷新其中的评测指标；新 Demo 的审计记录可在“历史报告 → 运行历史”查询。
 
 ## 8. Web 控制台与审计数据
 
@@ -537,3 +537,5 @@ uv run --env-file .env python examples/scenarios/runner.py examples/scenarios/a_
 - 溯源图以已记录证据为限，推断关联不等于已观测因果。沙箱绊网命中和历史小样本结果都不能直接作为所有攻击的防护保证。
 
 相关资料：[系统设计](DESIGN.md)、[控制台说明](console/README.md)、[固定语料报告](docs/report.md)、[银行对照报告](docs/bankfull_banking_report.md)、[CVE 关联场景报告](docs/cve_reproduction_report.md)、[隔离彩排报告](docs/rehearsal_report.md)。部分旧文档描述早期阶段，当前部署入口与能力边界以本 README 和实际实现为准。
+
+运行历史支持按日、月查询生产与评测会话，并按应用、数据集和运行批次筛选。接入及统计口径见 [运行历史与批次说明](docs/runtime-history.md)。

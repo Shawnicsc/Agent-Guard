@@ -19,7 +19,9 @@ from guard.contracts import (
     DataLabel,
     Decision,
     MissionSpec,
+    RunContext,
     ToolCallEnvelope,
+    new_id,
     utcnow,
 )
 
@@ -29,6 +31,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     user_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
     meta_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS run_batches (
+    batch_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    context_json TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS mission_versions (
     session_id TEXT NOT NULL,
@@ -120,6 +128,10 @@ CREATE TABLE IF NOT EXISTS memory_entries (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (user_id, key)
 );
+CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at);
+CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
+CREATE INDEX IF NOT EXISTS idx_calls_session ON calls(session_id);
+CREATE INDEX IF NOT EXISTS idx_decisions_call ON decisions(call_id);
 """
 
 
@@ -139,6 +151,40 @@ class AuditStore:
         self._conn.close()
 
     # ---- 写入 ----
+
+    def register_run(self, user_id: str, context: RunContext | None = None) -> dict:
+        """同一批次冻结归属；未指定批次时为本次执行创建独立批次。"""
+        context = context or RunContext()
+        supplied = context.model_dump(exclude_none=True, exclude_unset=True)
+        scope_keys = ("origin", "application", "dataset_id", "dataset_name",
+                      "dataset_version", "batch_name")
+        batch_id = context.batch_id or new_id("batch")
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM run_batches WHERE batch_id = ?", (batch_id,),
+            ).fetchone()
+            if row:
+                scope = json.loads(row["context_json"])
+                if row["user_id"] != user_id:
+                    raise ValueError("运行批次属于其他用户")
+                for key in scope_keys:
+                    if key in supplied and supplied[key] != scope.get(key):
+                        raise ValueError(f"运行批次归属冲突: {key}")
+            else:
+                scope = {key: supplied.get(key) for key in scope_keys}
+                scope["origin"] = scope["origin"] or "production"
+                self._conn.execute("INSERT INTO run_batches VALUES (?,?,?,?)", (
+                    batch_id, user_id, utcnow().isoformat(), json.dumps(scope, ensure_ascii=False),
+                ))
+                self._conn.commit()
+        return {**context.model_dump(), **scope, "batch_id": batch_id}
+
+    def session_run_context(self, session_id: str) -> dict:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT meta_json FROM sessions WHERE session_id = ?", (session_id,),
+            ).fetchone()
+        return json.loads(row[0]).get("run_context", {}) if row else {}
 
     def save_session(self, session_id: str, user_id: str, meta: dict[str, Any] = None) -> None:
         if meta is None:

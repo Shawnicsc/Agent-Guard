@@ -1,0 +1,20 @@
+.history-mode-tabs { margin-bottom: 20px; width: fit-content; max-width: 100%; flex-wrap: wrap; }
+.runtime-history { display: grid; gap: 20px; min-width: 0; }
+.history-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; padding: 22px; }
+.history-filters label { display: grid; gap: 8px; min-width: 0; font-size: 11px; color: #647d68; }
+.history-filters input, .history-filters select { min-width: 0; width: 100%; min-height: 36px; padding: 8px 11px; border: 1px solid #dce5d7; border-radius: 5px; background: #fafcf7; color: #45684c; font: inherit; }
+.history-search { grid-column: span 2; }
+.history-filter-actions { grid-column: span 2; display: flex; align-items: end; justify-content: end; gap: 15px; flex-wrap: wrap; }
+.history-results { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 18px; align-items: start; }
+.history-results > .panel { min-width: 0; }
+.history-periods { display: grid; gap: 7px; padding: 12px; max-height: 600px; overflow: auto; }
+.history-periods button { display: grid; gap: 8px; text-align: left; border-radius: 5px; padding: 13px 10px; background: #f4f7f1; border: 1px solid transparent; font-size: 12px; color: #45684c; }
+.history-periods button.active { border-color: #719b60; background: #e7f0e5; }
+.history-periods span { font-size: 10px; color: #74886f; }
+.history-table { min-width: 740px; }
+.history-table td { vertical-align: top; }
+.history-table td:first-child { max-width: 280px; overflow-wrap: anywhere; }
+.history-table td:nth-child(3) { max-width: 200px; overflow-wrap: anywhere; }
+.history-pagination { display: flex; gap: 10px; }
+@media (max-width: 1100px) { .history-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); } .history-results { grid-template-columns: 1fr; } .history-periods { display: flex; max-height: 170px; overflow: auto; } .history-periods button { min-width: 155px; } }
+@media (max-width: 600px) { .history-filters { padding: 15px; gap: 12px; } .history-filter-actions { justify-content: space-between; } .history-mode-tabs button { font-size: 11px; } .history-pagination .button { padding: 7px; } }

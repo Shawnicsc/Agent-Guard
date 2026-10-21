@@ -23,6 +23,7 @@ from guard.contracts import (  # noqa: E402
     AuditEvent,
     ContentSource,
     EventType,
+    RunContext,
     SourceType,
     content_hash,
 )
@@ -79,7 +80,8 @@ def _seed_case(session: GatewaySession, case: dict, store: AuditStore) -> list[s
     return source_ids
 
 
-def run_benchmark(corpus: Path, provider_name: str | None = None) -> dict:
+def run_benchmark(corpus: Path, provider_name: str | None = None,
+                  db_path: Path | None = None) -> dict:
     cases = yaml.safe_load(corpus.read_text(encoding="utf-8"))["cases"]
     providers = load_providers(settings.providers_config)
     name, provider = resolve_provider(providers, provider_name or settings.provider)
@@ -89,7 +91,13 @@ def run_benchmark(corpus: Path, provider_name: str | None = None) -> dict:
     results: list[dict] = []
     with tempfile.TemporaryDirectory(prefix="agent-guard-bench-") as temp:
         base = Path(temp)
-        store = AuditStore(base / "audit.db")
+        audit_path = db_path or settings.db_path
+        audit_path.parent.mkdir(parents=True, exist_ok=True)
+        store = AuditStore(audit_path)
+        context = store.register_run("bench-user", RunContext(
+            origin="evaluation", application="attack-corpus", dataset_id=corpus.stem,
+            dataset_name=corpus.stem, dataset_version=content_hash(corpus.read_bytes()),
+            batch_name="固定攻防语料评测"))
         try:
             for case in cases:
                 session = GatewaySession.create(
@@ -97,6 +105,7 @@ def run_benchmark(corpus: Path, provider_name: str | None = None) -> dict:
                     goal=case["goal"],
                     goal_category=case.get("goal_category", "general"),
                     semantic_analyzer=SemanticAnalyzer(client),
+                    run_context=RunContext(**{**context, "case_id": case["id"]}),
                 )
                 source_ids = _seed_case(session, case, store)
                 envelope = session.make_envelope(case["tool"], case["arguments"])
@@ -134,6 +143,7 @@ def run_benchmark(corpus: Path, provider_name: str | None = None) -> dict:
 
     return {
         "timestamp": datetime.now(UTC).isoformat(), "provider": name,
+        "run_context": context,
         "model": provider.model, "results": results,
         "metrics": {
             "attack_block_rate": ratio(sum(r["action"] == "BLOCK" for r in attacks),
@@ -197,8 +207,9 @@ def main() -> int:
                         default=ROOT / "examples/attack_corpus/cases.yaml")
     parser.add_argument("--output", type=Path, default=ROOT / "docs/report.md")
     parser.add_argument("--provider", help="覆盖 configs/providers.yaml 中的默认 provider")
+    parser.add_argument("--db", type=Path, default=settings.db_path, help="持久化审计库")
     args = parser.parse_args()
-    report = run_benchmark(args.corpus, args.provider)
+    report = run_benchmark(args.corpus, args.provider, args.db)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(render_report(report), encoding="utf-8")
     print(f"报告已生成: {args.output}")

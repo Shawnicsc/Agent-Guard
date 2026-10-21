@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { useTheme } from './Theme';
 import type { Action, Bootstrap, Incident, TraceSummary } from './types';
 import { num, sourceNames, time } from './lib';
 
@@ -41,24 +42,26 @@ export function Metric({ label, value, unit, detail, icon, tone = 'teal' }: { la
   return <div className="metric"><div className="metric-top"><span>{label}</span><span className={`metric-icon ${tone}`}><Icon name={icon} size={18} /></span></div><div className="metric-value">{typeof value === 'number' ? num(value) : value}<small>{unit}</small></div><div className="metric-detail">{detail}</div></div>;
 }
 export function TracePicker({ traces, selected, onChange }: { traces: TraceSummary[]; selected: string; onChange: (id: string) => void }) {
-  return <label className="trace-picker"><Icon name="trace" size={17} /><span>调查会话</span><select value={selected} onChange={event => onChange(event.target.value)} aria-label="选择调查会话"><option value="" disabled>{traces.length ? '选择任务会话' : '暂无审计会话'}</option>{traces.map(trace => <option key={trace.trace_id} value={trace.trace_id}>{trace.goal} · {trace.session_id}</option>)}</select></label>;
+  return <label className="trace-picker"><Icon name="trace" size={17} /><span>调查会话</span><select value={selected} onChange={event => onChange(event.target.value)} aria-label="选择调查会话"><option value="" disabled>{traces.length ? '选择任务会话' : '暂无审计会话'}</option>{selected && !traces.some(trace => trace.trace_id === selected) && <option value={selected}>历史会话 · {selected}</option>}{traces.map(trace => <option key={trace.trace_id} value={trace.trace_id}>{trace.goal} · {trace.session_id}</option>)}</select></label>;
 }
 export function Mission({ incident }: { incident: Incident }) {
   return <div className="mission"><span className="mission-icon"><Icon name="shield" size={21} /></span><div><span className="eyebrow">冻结的原始用户意图 · V{incident.mission.version ?? '?'}</span><p>{incident.mission.goal ?? '此会话未记录任务意图'}</p></div><span className="mono muted">{incident.session_id}</span></div>;
 }
 export function Activity({ data }: { data: Bootstrap['summary']['activity'] }) {
+  const { palette } = useTheme();
   if (!data.length) return <Empty title="暂无活动记录" />;
   const max = Math.max(...data.map(item => item.total), 1);
   const width = 660, height = 172, gap = width / data.length;
   return <div className="activity-chart"><svg viewBox={`0 0 ${width} ${height + 35}`} role="img" aria-label="最近十二个有记录小时的审计事件和决策数量"><title>审计事件分布，小时以 UTC 表示</title>{[0, 1, 2, 3].map(index => <line key={index} x1="0" x2={width} y1={index * 48 + 12} y2={index * 48 + 12} stroke="#e9edf0" strokeDasharray="4 4" />)}{data.map((item, index) => {
     const h = item.total / max * 135, d = item.decisions / max * 135;
-    return <g key={item.hour}><title>{item.hour}: {item.total} 条事件，{item.decisions} 次决策</title><rect x={index * gap + gap * .23} y={height - h} width={Math.min(36, gap * .54)} height={h} rx="4" fill="#d6e9e5" /><rect x={index * gap + gap * .23} y={height - d} width={Math.min(36, gap * .54)} height={d} rx="4" fill="#14816d" /><text x={index * gap + gap * .5} y={height + 24} textAnchor="middle" fill="#84918f" fontSize="11">{item.hour.slice(5, 10)} {item.hour.slice(11)}h</text></g>;
+    return <g key={item.hour}><title>{item.hour}: {item.total} 条事件，{item.decisions} 次决策</title><rect x={index * gap + gap * .23} y={height - h} width={Math.min(36, gap * .54)} height={h} rx="4" fill={palette.soft} /><rect x={index * gap + gap * .23} y={height - d} width={Math.min(36, gap * .54)} height={d} rx="4" fill={palette.accent} /><text x={index * gap + gap * .5} y={height + 24} textAnchor="middle" fill="#7183a0" fontSize="11">{item.hour.slice(5, 10)} {item.hour.slice(11)}h</text></g>;
   })}</svg><div className="chart-legend"><span><i className="swatch pale" />审计事件</span><span><i className="swatch teal" />其中：策略决策</span><span className="muted">UTC · 最近 {data.length} 个有记录小时</span></div></div>;
 }
 export function SourceDistribution({ counts }: { counts: Record<string, number> }) {
+  const { palette } = useTheme();
   const entries = Object.entries(counts).filter(([, count]) => count > 0).sort((a, b) => b[1] - a[1]);
   const total = entries.reduce((sum, [, count]) => sum + count, 0);
-  const colors = ['#16846f', '#70b6a4', '#a5cec1', '#d4a661', '#88a2be', '#b7c4d1', '#d8e4df'];
+  const colors = palette.series;
   let start = 0;
   const gradient = entries.map(([, count], index) => { const end = start + count / total * 100; const result = `${colors[index % colors.length]} ${start}% ${end}%`; start = end; return result; }).join(',');
   return <div className="distribution"><div className="donut" style={{ background: total ? `conic-gradient(${gradient})` : '#edf1ef' }}><div><strong>{num(total)}</strong><span>内容来源</span></div></div><div className="distribution-legend">{entries.length ? entries.map(([type, count], index) => <div key={type}><i style={{ background: colors[index % colors.length] }} /><span>{sourceNames[type] ?? type}</span><strong>{num(count)}</strong></div>) : <span className="muted">尚未记录来源</span>}</div></div>;

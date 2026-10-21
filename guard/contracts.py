@@ -11,9 +11,9 @@ import json
 import secrets
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
 def utcnow() -> datetime:
@@ -54,6 +54,23 @@ class ProtectionMode(StrEnum):
     ENFORCE = "enforce"
     MONITOR = "monitor"
     OFF = "off"
+
+
+class RunContext(BaseModel):
+    """由接入端声明的运行归属，仅用于审计分组，不授予工具权限。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    origin: Literal["production", "evaluation", "demo"] | None = None
+    application: str | None = Field(default=None, min_length=1, max_length=200)
+    dataset_id: str | None = Field(default=None, min_length=1, max_length=200)
+    dataset_name: str | None = Field(default=None, min_length=1, max_length=200)
+    dataset_version: str | None = Field(default=None, min_length=1, max_length=200)
+    batch_id: str | None = Field(default=None, min_length=1, max_length=200)
+    batch_name: str | None = Field(default=None, min_length=1, max_length=200)
+    case_id: str | None = Field(default=None, min_length=1, max_length=200)
+    attempt: int = Field(default=1, ge=1)
+    role: Literal["primary", "shadow"] = "primary"
+    parent_session_id: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class SourceType(StrEnum):

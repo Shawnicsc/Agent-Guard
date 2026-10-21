@@ -2,12 +2,12 @@
 """CVE 复现批处理：运行 examples/cve_scenarios/ 全部场景并生成报告。
 
 用法：
-  uv run python scripts/cve_repro.py             # 跑全部场景，重建审计库并生成报告
-  uv run python scripts/cve_repro.py --keep-db   # 追加到既有审计库
+  uv run python scripts/cve_repro.py             # 跑全部场景，保留历次审计并生成报告
+  uv run python scripts/cve_repro.py --db data/audit.db  # 写入共享审计库
 
 独立工作场景（不影响默认策略与既有测试结论）：
   - 策略：policies/cve_repro.yaml（默认规则全集 + CVE 专用规则，版本 cve1）
-  - 审计库：docs/cve_reproduction.db（每次运行默认重建）
+  - 审计库：docs/cve_reproduction.db（每次运行新建批次，保留历史）
   - 工作区：workspaces/cve/（每场景独立会话子目录）
   - 报告：docs/cve_reproduction_report.md + docs/cve_reproduction.json
 
@@ -34,6 +34,7 @@ from runner import run_direct_scenario  # noqa: E402
 from guard.audit.store import AuditStore  # noqa: E402
 from guard.audit.trace import rebuild_dag  # noqa: E402
 from guard.config import settings  # noqa: E402
+from guard.contracts import RunContext, content_hash  # noqa: E402
 from guard.sandbox.tripwire import TripwireScanner  # noqa: E402
 
 SCENARIO_DIR = PROJECT_ROOT / "examples" / "cve_scenarios"
@@ -165,8 +166,9 @@ def write_report(results: list[dict]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--keep-db", action="store_true",
-                        help="追加到既有审计库（默认每次重建）")
+    parser.add_argument("--keep-db", action="store_true", help="兼容旧命令；现已默认保留历史审计")
+    parser.add_argument("--db", type=Path, default=DB_PATH, help="审计库，可与部署网关共用")
+    parser.add_argument("--batch-id", help="运行批次 ID，省略时每次新建")
     args = parser.parse_args()
 
     scenarios = sorted(SCENARIO_DIR.glob("*.yaml"))
@@ -177,18 +179,26 @@ def main() -> int:
     # 独立工作区与审计库，避免与默认运行/测试相互干扰
     settings.workspaces_root = PROJECT_ROOT / "workspaces" / "cve"
     settings.workspaces_root.mkdir(parents=True, exist_ok=True)
-    if not args.keep_db and DB_PATH.exists():
-        DB_PATH.unlink()
-    store = AuditStore(DB_PATH)
+    args.db.parent.mkdir(parents=True, exist_ok=True)
+    store = AuditStore(args.db)
+    context = store.register_run("demo-user", RunContext(
+        origin="evaluation", application="cve-repro", dataset_id="cve-scenarios",
+        dataset_name="CVE 关联场景", batch_id=args.batch_id,
+        dataset_version=content_hash(b"".join(path.read_bytes() for path in scenarios)),
+        batch_name="CVE 场景验证"))
+    print(f"运行批次: {context['batch_id']} · 审计库: {args.db}")
     scanner = TripwireScanner()
 
     results = []
     try:
         for path in scenarios:
             scenario = yaml.safe_load(path.read_text(encoding="utf-8"))
-            rc, info = run_direct_scenario(scenario, store)
+            rc, info = run_direct_scenario(scenario, store, run_context=RunContext(
+                **{**context, "case_id": scenario["id"]}))
             results.append({
                 "id": scenario["id"],
+                "run_context": context,
+                "session_id": info["session_id"], "trace_id": info["trace_id"],
                 "cve": scenario["cve"],
                 "passed": rc == 0,
                 "calls": [_call_summary(c) for c in info["call_log"]],

@@ -1,4 +1,5 @@
 import { CveTrajectory } from './CveTrajectory';
+import { useTheme } from './Theme';
 import type { CveCase } from './types';
 import { useEffect, useRef, useState } from 'react';
 import { Badge, Empty, Icon, JsonView, Note, Panel } from './components';
@@ -11,9 +12,12 @@ type Arm = { arm: ArmId; total: number; successes: number; unknown: number; util
 type RehearsalCall = { tool: string; arguments: Record<string, unknown>; status: string; ok: boolean; error: string };
 type RehearsalEvent = { status: string; signals: string[]; replay_signals?: string[]; duration_ms: number; source_count: number; reason: string };
 type RehearsalRun = { task: string; cell: string; payload: string | null; completed: boolean; refused: number; elapsed_s: number; agent_tokens: number; calls: RehearsalCall[]; manifested: boolean; summary: string; trace_id: string; rehearsal_events: RehearsalEvent[]; attributed_blocks: number };
-type Presentation = { arms: Arm[]; runs: BankRun[]; files: { name: string; sha256: string }[]; warnings: string[]; metadata: { timestamp: string; model: string; guard_detector_model: string; benchmark_version: string }[]; provenance: { kind: string; commit: string; bank_date: string; rehearsal_date: string; rehearsal_revision: string }; rehearsal: { runs: RehearsalRun[]; tasks: Record<string, { instruction: string; inject_file: string }>; summary: { total?: number; injected?: number; benign?: number; manifested?: number; blocked?: number; benign_blocks?: number; events?: number; unavailable?: number; p50?: number; p95?: number; tokens?: number } } };
+type Presentation = { arms: Arm[]; runs: BankRun[]; cves: CveCase[]; files: { name: string; sha256: string; updated_at: string }[]; warnings: string[]; metadata: { timestamp: string; model: string; guard_detector_model: string; benchmark_version: string }[]; provenance: { kind: string; commit: string; bank_date: string; rehearsal_date: string; rehearsal_revision: string }; rehearsal: { runs: RehearsalRun[]; tasks: Record<string, { instruction: string; inject_file: string }>; summary: { total?: number; injected?: number; benign?: number; manifested?: number; blocked?: number; benign_blocks?: number; events?: number; unavailable?: number; p50?: number; p95?: number; tokens?: number } } };
 const labels: Record<ArmId, string> = { direct: '无防护', agent_guard_monitor: '仅监控', agent_guard: '强制防护' };
-const colors: Record<ArmId, string> = { direct: '#718797', agent_guard_monitor: '#bf934b', agent_guard: '#16806b' };
+function useArmColors(): Record<ArmId, string> {
+  const { palette } = useTheme();
+  return { direct: '#64748b', agent_guard_monitor: palette.secondary, agent_guard: palette.accent };
+}
 const outcomeNames = { success: '攻击成功', failed: '攻击未成功', unknown: '错误 / 未知' };
 const rate = (n: number, d: number) => d ? `${(100 * n / d).toFixed(1)}%` : '—';
 const numericSort = (a: string, b: string) => a.localeCompare(b, undefined, { numeric: true });
@@ -26,29 +30,31 @@ function saveSvg(svg: SVGSVGElement | null, name: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 function Evidence({ children }: { children: React.ReactNode }) {
-  return <div className="evidence-strip"><span className="evidence-tag">历史真实实验</span><span>{children}</span></div>;
+  return <div className="evidence-strip"><span className="evidence-tag">历史报告</span><span>{children}</span></div>;
 }
 function ComparisonChart({ arms, utility = false }: { arms: Arm[]; utility?: boolean }) {
+  const colors = useArmColors();
   const svg = useRef<SVGSVGElement>(null);
   return <Panel title={utility ? '攻击下合法任务完成率 ↑' : '攻击成功率 ↓'} aside={<button className="text-button" onClick={() => saveSvg(svg.current, `${utility ? 'utility' : 'asr'}-comparison.svg`)}>导出 SVG</button>}>
     <svg ref={svg} className="comparison-svg" viewBox="0 0 600 300" role="img" aria-label={utility ? '三种模式的合法任务完成率' : '三种模式的攻击成功率'} style={{ background: '#fff', fontFamily: 'Segoe UI, Microsoft YaHei, sans-serif' }}>
       <title>{utility ? '合法任务完成率，分母为各模式全部攻击运行' : '攻击成功率，分母为各模式全部攻击运行；误差线为逐运行二项 Wilson 区间'}</title>
-      {[0, 25, 50, 75, 100].map(t => <g key={t}><line x1="58" x2="565" y1={235 - t * 1.85} y2={235 - t * 1.85} stroke="#e6ebe8" /><text x="48" y={239 - t * 1.85} textAnchor="end" fill="#6a7d73" fontSize="11">{t}%</text></g>)}
+      {[0, 25, 50, 75, 100].map(t => <g key={t}><line x1="58" x2="565" y1={235 - t * 1.85} y2={235 - t * 1.85} stroke="#e2e8f0" /><text x="48" y={239 - t * 1.85} textAnchor="end" fill="#7183a0" fontSize="11">{t}%</text></g>)}
       {arms.map((arm, index) => {
         const n = utility ? arm.utility : arm.successes, value = arm.total ? n / arm.total : 0;
         const x = 105 + index * 165, h = value * 185, y = 235 - h;
         return <g key={arm.arm}><title>{labels[arm.arm]}：{n}/{arm.total}，{rate(n, arm.total)}；未知 {utility ? arm.utility_unknown : arm.unknown}</title><rect x={x} y={y} width="82" height={Math.max(h, 2)} rx="5" fill={colors[arm.arm]} />
-          {!utility && arm.ci && <g stroke="#304c40" strokeWidth="1.5"><line x1={x + 41} x2={x + 41} y1={235 - arm.ci[0] * 185} y2={235 - arm.ci[1] * 185} /><line x1={x + 34} x2={x + 48} y1={235 - arm.ci[1] * 185} y2={235 - arm.ci[1] * 185} /></g>}
-          <text x={x + 41} y={Math.max(25, y - 19)} textAnchor="middle" fill="#213e31" fontSize="21" fontWeight="700">{rate(n, arm.total)}</text><text x={x + 41} y="258" textAnchor="middle" fill="#304c40" fontSize="13">{labels[arm.arm]}</text><text x={x + 41} y="280" textAnchor="middle" fill="#6a7d73" fontSize="11">{n} / {arm.total}</text></g>;
+          {!utility && arm.ci && <g stroke="#405473" strokeWidth="1.5"><line x1={x + 41} x2={x + 41} y1={235 - arm.ci[0] * 185} y2={235 - arm.ci[1] * 185} /><line x1={x + 34} x2={x + 48} y1={235 - arm.ci[1] * 185} y2={235 - arm.ci[1] * 185} /></g>}
+          <text x={x + 41} y={Math.max(25, y - 19)} textAnchor="middle" fill="#253656" fontSize="21" fontWeight="700">{rate(n, arm.total)}</text><text x={x + 41} y="258" textAnchor="middle" fill="#405473" fontSize="13">{labels[arm.arm]}</text><text x={x + 41} y="280" textAnchor="middle" fill="#7183a0" fontSize="11">{n} / {arm.total}</text></g>;
       })}
     </svg><p className="chart-footnote">{utility ? '任务完成由原评测 utility 字段判定；不会将攻击未成功计作任务完成。' : '两图使用相同的 0–100% 刻度。0 次观测成功不代表风险为零。'}</p>
   </Panel>;
 }
 function Results({ data }: { data: Presentation }) {
-  return <><Evidence>银行套件 · {data.provenance.bank_date} · 每种模式 16 个任务 × 9 个攻击目标 × 3 种载荷 · 模拟业务工具</Evidence>
+  const colors = useArmColors();
+  return <><Evidence>银行评测 · {data.provenance.bank_date} · {data.runs.length} 次攻击运行 · 模拟业务工具</Evidence>
     <div className="grid-two"><ComparisonChart arms={data.arms} /><ComparisonChart arms={data.arms} utility /></div>
     <Panel title="从效果到代价，逐项核对"><div className="table-scroll"><table><thead><tr><th>模式</th><th>攻击成功 / 总运行</th><th>95% Wilson 区间</th><th>错误 / 未知</th><th>合法完成 / 总运行</th><th>载荷观测到</th><th>含 BLOCK 判定的运行</th></tr></thead><tbody>{data.arms.map(arm => <tr key={arm.arm}><td><span className="arm-dot" style={{ background: colors[arm.arm] }} />{labels[arm.arm]}</td><td>{arm.successes} / {arm.total}</td><td>{arm.ci ? `${(arm.ci[0] * 100).toFixed(2)}% – ${(arm.ci[1] * 100).toFixed(2)}%` : '无有效区间'}</td><td>{arm.unknown}</td><td>{arm.utility} / {arm.total}{arm.utility_unknown > 0 && `（未知 ${arm.utility_unknown}）`}</td><td>{arm.visible} / {arm.total}</td><td>{arm.block_runs}{arm.arm === 'agent_guard_monitor' ? '（仅记录，未强制拦截）' : ''}</td></tr>)}</tbody></table></div></Panel>
-    <div className="report-insight"><strong>展示结论</strong><p>本次银行实验中，强制防护观测到的攻击成功为 0 次；同时需要关注合法任务完成率的下降。仅监控模式用于区分安全判定和实际执行拦截的作用。</p></div>
+    <div className="report-insight"><strong>统计范围</strong><p>仅统计当前银行评测存档中的 {data.runs.length} 次攻击运行。CVE 场景与隔离彩排单独展示，不计入银行攻击成功率或任务完成率。</p></div>
     <Note>每个任务与载荷组合单次运行，同一任务下的样本可能相关；Wilson 区间按逐运行二项模型计算，仅作为描述性区间。载荷可见性与攻击成功是不同字段。该银行实验不包含新增彩排层的效果验证。</Note>
   </>;
 }
@@ -63,7 +69,7 @@ function Coverage({ data }: { data: Presentation }) {
   const variants = [...new Set(data.runs.map(r => r.attack))];
   const selected = cell ? runs.filter(r => r.task === cell.task && r.target === cell.target) : [];
   const active = selected.find(r => r.id === runId) ?? selected[0];
-  return <><Evidence>银行实验原始分片 · 单元格为任务 × 攻击目标 · 全部载荷时通常每格 n=3</Evidence><Panel title="任务 × 攻击目标覆盖矩阵" aside={<div className="report-selectors"><select aria-label="矩阵防护模式" value={arm} onChange={e => { setArm(e.target.value as ArmId); setRunId(''); }}>{Object.entries(labels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select><select aria-label="矩阵载荷类型" value={variant} onChange={e => { setVariant(e.target.value); setRunId(''); }}><option value="all">全部载荷</option>{variants.map(v => <option key={v}>{v}</option>)}</select></div>}>
+  return <><Evidence>银行评测 · 单元格为任务 × 攻击目标 · 样本数按当前存档计算</Evidence><Panel title="任务 × 攻击目标覆盖矩阵" aside={<div className="report-selectors"><select aria-label="矩阵防护模式" value={arm} onChange={e => { setArm(e.target.value as ArmId); setRunId(''); }}>{Object.entries(labels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select><select aria-label="矩阵载荷类型" value={variant} onChange={e => { setVariant(e.target.value); setRunId(''); }}><option value="all">全部载荷</option>{variants.map(v => <option key={v}>{v}</option>)}</select></div>}>
       <div className="matrix-legend"><span><i className="legend-square success" />攻击成功</span><span><i className="legend-square failed" />已知结果均未成功</span><span><i className="legend-square unknown" />存在错误 / 未知</span><span>● 含 BLOCK 判定；仅监控时不会拦截</span></div>
       <div className="table-scroll"><table className="coverage-matrix"><thead><tr><th>用户任务 / 攻击目标</th>{targets.map(t => <th key={t}>{t.replace('injection_task_', '目标 ')}</th>)}</tr></thead><tbody>{tasks.map(task => <tr key={task}><th>{task.replace('user_task_', '任务 ')}</th>{targets.map(target => {
         const group = runs.filter(r => r.task === task && r.target === target), n = group.length;
@@ -101,19 +107,45 @@ function Rehearsal({ data, playback = false, active = true }: { data: Presentati
         <button className="text-button" onClick={() => downloadJson(`${task}-rehearsal-evidence.json`, { provenance: data.provenance, source_file: 'rehearsal_stage3_eval.json', injected: run, independent_benign: benign })}>导出当前案例证据</button>
       </div></Panel></>;
 }
-export function PresentationPage({ cves }: { cves: CveCase[] }) {
+export function PresentationPage() {
   const [data, setData] = useState<Presentation | null>(null), [error, setError] = useState('');
-  const [tab, setTab] = useState(() => new URLSearchParams(window.location.search).get('view') === 'cve' ? 'cve' : 'results'), [presenting, setPresenting] = useState(false);
+  const [tab, setTab] = useState(() => ['results', 'coverage', 'playback', 'rehearsal', 'cve'].find(view => view === new URLSearchParams(window.location.search).get('view')) ?? 'catalog'), [presenting, setPresenting] = useState(false);
   useEffect(() => { const abort = new AbortController(); getJson<Presentation>('/api/console/presentation', abort.signal).then(setData).catch(e => { if (!abort.signal.aborted) setError(String(e)); }); return () => abort.abort(); }, []);
   useEffect(() => { document.body.classList.toggle('presentation-mode', presenting); return () => document.body.classList.remove('presentation-mode'); }, [presenting]);
   useEffect(() => { const exit = (e: KeyboardEvent) => { if (e.key === 'Escape') setPresenting(false); }; window.addEventListener('keydown', exit); return () => window.removeEventListener('keydown', exit); }, []);
+  const selectTab = (next: string) => {
+    setTab(next);
+    const url = new URL(window.location.href);
+    if (next === 'catalog') url.searchParams.delete('view');
+    else url.searchParams.set('view', next);
+    window.history.replaceState(null, '', url);
+  };
   if (error) return <Note tone="warning">报告数据读取失败：{error}。请确认已重启新版控制台服务。</Note>;
-  if (!data) return <div className="loading-state" role="status">正在读取历史实验分片与彩排记录…</div>;
-  return <div className="presentation-page"><div className="report-hero"><div><h2>从防护结果，走到每一次决策。</h2><p>效果、覆盖、行为证据与隔离彩排，沿同一条证据链展开。</p><div className="report-hero-tags"><span>原始分片计算</span><span>错误 / 未知独立保留</span><span>真实实验与合成演示分离</span></div></div><div className="report-hero-number"><strong>{data.runs.length.toLocaleString()}</strong><span>银行攻击运行 · 三种模式合计</span><small>另含 {data.rehearsal.summary.total ?? 0} 次彩排实验运行</small></div></div>
-    <div className="report-toolbar"><div className="tabs report-tabs">{[['results', '01 效果与代价'], ['coverage', '02 覆盖矩阵'], ['playback', '03 案例回放'], ['rehearsal', '04 彩排对照'], ['cve', '05 CVE 攻击轨迹']].map(([id, title]) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{title}</button>)}</div><div className="report-actions"><button className="button secondary" onClick={() => setPresenting(v => !v)}>{presenting ? '退出展示' : '展示模式'}</button><button className="button secondary" onClick={() => window.print()}>打印 / PDF</button><button className="icon-button" title="导出全部报告证据 JSON" aria-label="导出全部报告证据" onClick={() => downloadJson('traceshield-report-evidence.json', data)}><Icon name="download" size={18} /></button></div></div>
+  if (!data) return <div className="loading-state" role="status">正在读取历史报告…</div>;
+  const reports = [
+    { id: 'results', title: '银行评测报告', count: data.runs.length, unit: '次攻击运行',
+      detail: '三种防护模式的效果、任务完成率与覆盖矩阵',
+      source: 'bankfull_*_shard*.json', files: data.files.filter(file => file.name.startsWith('bankfull_')),
+      active: tab === 'results' || tab === 'coverage' },
+    { id: 'rehearsal', title: '隔离彩排报告', count: data.rehearsal.runs.length, unit: '次彩排运行',
+      detail: '注入与良性对照、净化重跑信号及案例回放',
+      source: 'rehearsal_stage3_eval.json', files: data.files.filter(file => file.name === 'rehearsal_stage3_eval.json'),
+      active: tab === 'rehearsal' || tab === 'playback' },
+    { id: 'cve', title: 'CVE 场景报告', count: data.cves.length, unit: '个验证场景',
+      detail: `通过 ${data.cves.filter(cve => cve.passed).length} / ${data.cves.length} 个场景 · ${data.cves.reduce((sum, cve) => sum + cve.calls.length, 0)} 条工具调用`,
+      source: 'cve_reproduction.json', files: data.files.filter(file => file.name === 'cve_reproduction.json'),
+      active: tab === 'cve' },
+  ];
+  return <div className="presentation-page"><div className="report-hero"><div><h2>历史报告与运行证据</h2><p>选择报告查看对应记录，各类报告独立统计。刷新可读取已更新的存档。</p><div className="report-hero-tags"><span>银行评测</span><span>隔离彩排</span><span>CVE 场景验证</span></div></div><div className="report-hero-number"><strong>{reports.filter(report => report.count > 0).length}</strong><span>类报告有记录</span><small>独立于当前审计任务</small></div></div>
+    <div className="history-report-catalog" aria-label="历史报告目录">{reports.map(report => {
+      const latest = report.files.map(file => file.updated_at).sort().at(-1);
+      return <button key={report.id} className={`history-report-card report-${report.id} ${report.active ? 'active' : ''}`} aria-pressed={report.active} onClick={() => selectTab(report.id)}><h3>{report.title}</h3><div className="history-report-count"><strong>{report.count.toLocaleString()}</strong><span>{report.unit}</span></div><p>{report.detail}</p><small>来源：{report.source}</small><small>{latest ? `存档更新：${new Date(latest).toLocaleString('zh-CN', { hour12: false })}` : '暂无存档'}</small><span className="history-report-link">查看报告 →</span></button>;
+    })}</div>
+    <div className="report-toolbar"><div className="tabs report-tabs">{[['catalog', '报告目录'], ['results', '银行 · 效果'], ['coverage', '银行 · 覆盖'], ['playback', '彩排 · 回放'], ['rehearsal', '彩排 · 对照'], ['cve', 'CVE · 场景']].map(([id, title]) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => selectTab(id)}>{title}</button>)}</div><div className="report-actions"><button className="button secondary" onClick={() => setPresenting(v => !v)}>{presenting ? '退出展示' : '展示模式'}</button><button className="button secondary" onClick={() => window.print()}>打印 / PDF</button><button className="icon-button" title="导出全部历史报告证据（含 CVE）" aria-label="导出全部历史报告证据" onClick={() => downloadJson('traceshield-report-evidence.json', data)}><Icon name="download" size={18} /></button></div></div>
     {data.warnings.map((warning, i) => <Note tone="warning" key={i}>{warning}</Note>)}
-    <section className={`report-section ${tab === 'results' ? 'active' : ''}`}><Results data={data} /></section><section className={`report-section ${tab === 'coverage' ? 'active' : ''}`}><Coverage data={data} /></section><section className={`report-section ${tab === 'playback' ? 'active' : ''}`}><Rehearsal data={data} playback active={tab === 'playback'} /></section><section className={`report-section ${tab === 'rehearsal' ? 'active' : ''}`}><Rehearsal data={data} /></section>
-    <section className={`report-section ${tab === 'cve' ? 'active' : ''}`}><CveTrajectory key={tab} cases={cves} /></section>
-    <details className="provenance-details"><summary>数据来源与证据清单 · {data.files.length} 个存档文件</summary><p>数据类型：{data.provenance.kind} · {data.provenance.commit}。页面读取当前仓库存档，不启动模型或新实验。</p><p>银行模型：{[...new Set(data.metadata.map(m => m.model))].join(', ')} · 检测器：{[...new Set(data.metadata.map(m => m.guard_detector_model).filter(Boolean))].join(', ')} · AgentDojo：{[...new Set(data.metadata.map(m => m.benchmark_version))].join(', ')}</p><p>任务描述来自当前 examples/rehearsal/tasks.yaml；不视为原始运行的冻结快照。{data.provenance.rehearsal_revision}。</p><div className="table-scroll"><table><thead><tr><th>数据文件</th><th>SHA-256 · 当前存档校验值</th></tr></thead><tbody>{data.files.map(f => <tr key={f.name}><td>{f.name}</td><td className="mono">{f.sha256}</td></tr>)}</tbody></table></div></details>
+    {tab === 'catalog' && <Note>选择上方报告查看详情。银行评测、隔离彩排和 CVE 场景使用各自的记录与指标；切换当前审计任务不会替换历史报告。存档更新时间表示文件更新时间，不等同于实验执行时间。</Note>}
+    <section className={`report-section ${tab === 'results' ? 'active' : ''}`}>{data.runs.length ? <Results data={data} /> : <Empty title="暂无银行评测存档" />}</section><section className={`report-section ${tab === 'coverage' ? 'active' : ''}`}><Coverage data={data} /></section><section className={`report-section ${tab === 'playback' ? 'active' : ''}`}><Rehearsal data={data} playback active={tab === 'playback'} /></section><section className={`report-section ${tab === 'rehearsal' ? 'active' : ''}`}><Rehearsal data={data} /></section>
+    <section className={`report-section ${tab === 'cve' ? 'active' : ''}`}><Panel title="CVE 场景结果" aside={<span className="tag">工具调用层验证</span>}><div className="table-scroll"><table><thead><tr><th>场景</th><th>验证结果</th><th>调用数</th><th>BLOCK</th><th>CONFIRM</th><th>实际执行</th></tr></thead><tbody>{data.cves.map(cve => <tr key={cve.id}><td><strong>{cve.cve.id}</strong><span className="cell-sub">{cve.cve.title}</span></td><td><Badge tone={cve.passed ? 'teal' : 'rose'}>{cve.passed ? '通过' : '未通过'}</Badge></td><td>{cve.calls.length}</td><td>{cve.calls.filter(call => call.decision === 'BLOCK').length}</td><td>{cve.calls.filter(call => call.decision === 'CONFIRM').length}</td><td>{cve.calls.filter(call => call.executed === true).length}</td></tr>)}</tbody></table></div><div className="panel-body"><Note>场景通过表示满足预设裁决与执行断言。CVE 结果独立于银行评测，不计入银行攻击成功率；这些场景不经过真实漏洞产品、模型或 Docker。</Note></div></Panel><CveTrajectory key={tab} cases={data.cves} /></section>
+    <details className="provenance-details"><summary>数据来源与证据清单 · {data.files.length} 个存档文件</summary><p>数据类型：{data.provenance.kind} · {data.provenance.commit}。页面读取当前仓库存档，不启动模型或新实验。</p><p>银行模型：{[...new Set(data.metadata.map(m => m.model).filter(Boolean))].join(', ') || '未记录'} · 检测器：{[...new Set(data.metadata.map(m => m.guard_detector_model).filter(Boolean))].join(', ') || '未记录'} · AgentDojo：{[...new Set(data.metadata.map(m => m.benchmark_version).filter(Boolean))].join(', ') || '未记录'}</p><p>任务描述来自当前 examples/rehearsal/tasks.yaml；不视为原始运行的冻结快照。{data.provenance.rehearsal_revision}。</p><div className="table-scroll"><table><thead><tr><th>数据文件</th><th>SHA-256 · 当前存档校验值</th></tr></thead><tbody>{data.files.map(f => <tr key={f.name}><td>{f.name}</td><td className="mono">{f.sha256}</td></tr>)}</tbody></table></div></details>
   </div>;
 }

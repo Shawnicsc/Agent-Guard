@@ -38,6 +38,7 @@ from guard.contracts import (
     ContentSource,
     EventType,
     ProtectionMode,
+    RunContext,
     SourceType,
     ToolResult,
     TrustLevel,
@@ -324,6 +325,8 @@ class SandboxRunner:
                     allow_exfiltration=self.session.mission.allow_exfiltration,
                     allow_push=self.session.mission.allow_push,
                     policy_engine=self.session.policy_engine,
+                    run_context=RunContext(**{**self.session.run_context, "role": "shadow",
+                                             "parent_session_id": self.session.mission.session_id}),
                 )
                 # 彩排本身只采集候选调用，不再启动下一层彩排。
                 replay_session.rehearsal_service = None

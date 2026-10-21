@@ -146,3 +146,67 @@ def test_incident_routes(tmp_path, monkeypatch):
     assert detail.status_code == 200
     assert detail.json()["trace_id"] == trace_id
     assert client.get("/incidents/missing").status_code == 404
+
+
+def test_run_batch_inheritance_and_conflict(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    batch = client.post('/run-batches', json={
+        'user_id': 'u1', 'run_context': {
+            'origin': 'evaluation', 'application': 'custom-agent',
+            'dataset_id': 'new-dataset', 'dataset_name': '新的测试集',
+            'dataset_version': 'v1', 'batch_name': '第一轮',
+        },
+    })
+    assert batch.status_code == 200
+    batch_id = batch.json()['batch_id']
+    sessions = []
+    for case_id in ('case-1', 'case-2'):
+        response = client.post('/sessions', json={
+            'user_id': 'u1', 'goal': '读取文档',
+            'run_context': {'batch_id': batch_id, 'case_id': case_id},
+        })
+        assert response.status_code == 200
+        sessions.append(response.json())
+    assert sessions[0]['session_id'] != sessions[1]['session_id']
+    assert all(session['run_context']['dataset_id'] == 'new-dataset' for session in sessions)
+    conflict = client.post('/sessions', json={
+        'user_id': 'u1', 'goal': '读取文档',
+        'run_context': {'batch_id': batch_id, 'dataset_id': 'other-dataset'},
+    })
+    assert conflict.status_code == 409
+    invalid = client.post('/sessions', json={
+        'user_id': 'u1', 'goal': '读取文档',
+        'run_context': {'origin': 'fabricated'},
+    })
+    assert invalid.status_code == 422
+
+
+def test_console_history_updates_and_exports_without_writes(tmp_path, monkeypatch):
+    from console.server import create_console
+
+    client = make_client(tmp_path, monkeypatch)
+    console = TestClient(create_console(tmp_path / 'api.db', tmp_path / 'not-needed.yaml'))
+    assert console.get('/api/console/history').json()['summary']['sessions'] == 0
+    created = client.post('/sessions', json={
+        'user_id': 'u1', 'goal': '从真实系统进入历史报告',
+        'run_context': {'origin': 'production', 'application': 'support-agent'},
+    }).json()
+    client.post('/tool-calls/decide', json={
+        'session_id': created['session_id'], 'tool': 'fs.read',
+        'arguments': {'path': 'README.md'},
+    })
+    data = console.get(
+        '/api/console/history?group_by=month&application=support-agent').json()
+    assert data['summary']['sessions'] == 1
+    assert data['summary']['calls'] == 1
+    assert data['items'][0]['trace_id'] == created['trace_id']
+    assert console.get('/api/console/history?origin=evaluation').json()['total'] == 0
+    export = console.get('/api/console/history?export_all=true').json()
+    assert export['items'][0]['session_id'] == created['session_id']
+    assert export['export_all'] is True
+    assert console.get('/api/console/history?timezone=bad-zone').status_code == 422
+    assert console.get('/api/console/history?start=bad-date').status_code == 422
+    assert console.get('/api/console/history?group_by=year').status_code == 422
+    assert console.get('/api/console/history?page=0').status_code == 422
+    assert console.get('/api/console/history?search=does-not-exist').json()['items'] == []
+    assert console.get(f"/api/incidents/{created['trace_id']}").status_code == 200
