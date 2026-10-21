@@ -28,6 +28,7 @@ sys.path.insert(0, str(ROOT))
 
 from guard.audit.redact import redact_payload, redact_text  # noqa: E402
 from guard.audit.trace import rebuild_dag  # noqa: E402
+from console.presentation import build_presentation  # noqa: E402
 
 REPORTS = {
     "report.md", "bankfull_banking_report.md", "cve_reproduction_report.md",
@@ -294,6 +295,10 @@ def create_console(db_path: Path, policy_path: Path) -> FastAPI:
             payload["policy"]["error"] = str(exc)
         payload["evaluations"] = evaluations()
         return sanitize(payload)
+
+    @app.get("/api/console/presentation")
+    def presentation():
+        return sanitize(build_presentation(ROOT))
 
     @app.get("/api/incidents")
     def list_incidents():

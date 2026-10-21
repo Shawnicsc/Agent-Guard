@@ -1,5 +1,5 @@
 export type Action = 'ALLOW' | 'CONFIRM' | 'BLOCK';
-export type Page = 'overview' | 'sources' | 'alignment' | 'policies' | 'trace' | 'robustness';
+export type Page = 'presentation' | 'overview' | 'sources' | 'alignment' | 'policies' | 'trace' | 'robustness';
 export type Json = Record<string, unknown>;
 export type TraceSummary = {
   trace_id: string; session_id: string; started_at: string; last_event_at: string;
