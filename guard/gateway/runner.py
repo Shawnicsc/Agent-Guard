@@ -37,6 +37,7 @@ from guard.contracts import (
     AuditEvent,
     ContentSource,
     EventType,
+    ProtectionMode,
     SourceType,
     ToolResult,
     TrustLevel,
@@ -67,7 +68,8 @@ class RunnerError(RuntimeError):
 
 class SandboxRunner:
     def __init__(self, session: GatewaySession, llm: LLMClient, spec: SandboxSpec,
-                 store: AuditStore, depth: int = 0, shadow: bool = False) -> None:
+                 store: AuditStore, depth: int = 0, shadow: bool = False,
+                 *, semantic_llm: LLMClient | None = None) -> None:
         self.session = session
         self.llm = llm
         self.spec = spec
@@ -77,7 +79,9 @@ class SandboxRunner:
         self._snapshot: Path | None = None
         self._message = ""
         self._observed_sources: list[tuple[ContentSource, str]] = []
-        self.session.semantic_analyzer = SemanticAnalyzer(llm)
+        # 不再用任务模型覆盖已有审计模型；调用方显式提供独立的审计客户端。
+        if semantic_llm is not None and session.protection_mode != ProtectionMode.OFF:
+            self.session.semantic_analyzer = SemanticAnalyzer(semantic_llm)
         # 全部调用记录（含被拒），供场景断言与测试使用
         self.call_log: list[dict] = []
 
@@ -87,6 +91,7 @@ class SandboxRunner:
         snapshot_tmp = None
         prior_rehearsal = self.session.rehearsal_service
         if settings.rehearsal_enabled and not self.shadow \
+                and self.session.protection_mode != ProtectionMode.OFF \
                 and getattr(self.session.policy_engine, "uses_predicate",
                             lambda _name: False)("rehearsal_attributed"):
             try:
@@ -127,11 +132,19 @@ class SandboxRunner:
                 agent_id=self.session.agent_id,
                 payload={"container": self.spec.container_name},
             ))
+            auditor = (self.session.semantic_analyzer.llm
+                       if self.session.semantic_analyzer is not None
+                       and self.session.protection_mode != ProtectionMode.OFF else None)
             self.store.append_event(AuditEvent(
                 trace_id=self.session.trace_id, type=EventType.AGENT_STARTED,
                 session_id=self.session.mission.session_id,
                 agent_id=self.session.agent_id,
-                payload={"message": message},
+                payload={"message": message,
+                         "protection_mode": self.session.protection_mode.value,
+                         "task_provider": self.llm.provider_name,
+                         "task_model": self.llm.provider.model,
+                         "semantic_provider": auditor.provider_name if auditor else None,
+                         "semantic_model": auditor.provider.model if auditor else None},
             ))
             while time.monotonic() < deadline:
                 line = proc.stdout.readline()
@@ -257,11 +270,17 @@ class SandboxRunner:
                     "output": json.dumps({"agent_id": child_id,
                                           "summary": child_summary}, ensure_ascii=False),
                 })
-        refused = not (decision.action.value == "ALLOW" and result.ok)
-        record.update(status=decision.action.value, ok=result.ok, error=result.error)
+        bypassed = (self.session.protection_mode == ProtectionMode.MONITOR
+                    and decision.action.value != "ALLOW")
+        status = "ALLOW" if bypassed else decision.action.value
+        refused = not (status == "ALLOW" and result.ok)
+        record.update(status=status, decision_status=decision.action.value, bypassed=bypassed,
+                      ok=result.ok, error=result.error)
         self._send(proc, {
             "type": "tool_result", "request_id": request_id,
-            "status": decision.action.value, "ok": result.ok,
+            "status": status, "decision_status": decision.action.value,
+            "protection_mode": self.session.protection_mode.value,
+            "ok": result.ok,
             "output": result.output, "error": result.error,
             "reason": decision.reason, "approval_id": decision.approval_id,
         })

@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import json
 import logging
+from copy import deepcopy
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from pydantic import BaseModel, Field
@@ -15,6 +17,7 @@ from pydantic import BaseModel, Field
 from guard.llm.config import ProviderConfig
 
 log = logging.getLogger(__name__)
+_UNDERSCORE_TOOL_HOSTS = frozenset({"api.deepseek.com", "api.moonshot.cn", "api.moonshot.ai"})
 
 
 class ToolCall(BaseModel):
@@ -74,6 +77,23 @@ class LLMClient:
             body["response_format"] = response_format
         if self.provider.extra_body:
             body.update(self.provider.extra_body)
+        if tools and urlsplit(self.provider.base_url).hostname in _UNDERSCORE_TOOL_HOSTS:
+            # DeepSeek / Kimi 的 API 工具名去点；网关及审计继续使用原工具名。
+            names = {
+                tool["function"]["name"]: tool["function"]["name"].replace(".", "_")
+                for tool in tools
+            }
+            if len(set(names.values())) != len(names):
+                raise LLMError("工具名转换后发生重名")
+            body = deepcopy(body)
+            for tool in body["tools"]:
+                function = tool["function"]
+                function["name"] = names[function["name"]]
+            for message in body["messages"]:
+                for call in message.get("tool_calls") or []:
+                    function = call.get("function", {})
+                    if function.get("name") in names:
+                        function["name"] = names[function["name"]]
         return body
 
     def chat(
@@ -83,12 +103,21 @@ class LLMClient:
         response_format: dict[str, Any] | None = None,
     ) -> LLMResponse:
         body = self._payload(messages, tools, response_format)
+        tool_names = {}
+        if urlsplit(self.provider.base_url).hostname in _UNDERSCORE_TOOL_HOSTS:
+            tool_names = {
+                tool["function"]["name"].replace(".", "_"): tool["function"]["name"]
+                for tool in tools or []
+            }
         last_error: Exception | None = None
         for attempt in range(self.provider.max_retries + 1):
             try:
                 resp = self._client.post("/chat/completions", json=body)
                 resp.raise_for_status()
-                return _parse_response(resp.json())
+                result = _parse_response(resp.json())
+                for call in result.tool_calls:
+                    call.name = tool_names.get(call.name, call.name)
+                return result
             except (httpx.HTTPError, LLMError, ValueError) as exc:
                 last_error = exc
                 log.warning(

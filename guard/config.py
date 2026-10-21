@@ -6,6 +6,8 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from guard.contracts import ProtectionMode
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -18,6 +20,10 @@ class Settings(BaseSettings):
     providers_config: Path = PROJECT_ROOT / "configs" / "providers.yaml"
     # provider 选择，环境变量 AGENT_GUARD_PROVIDER 覆盖
     provider: str = "local"
+    # Demo 的任务执行与语义审计分别配置；通用 API/bench 继续使用 provider。
+    task_provider: str = "kimi"
+    semantic_provider: str = "deepseek"
+    protection_mode: ProtectionMode = ProtectionMode.ENFORCE
     # 演示沙箱镜像（阶段 A 直接用官方 slim 基底，无需自建镜像）
     sandbox_image: str = "python:3.12-slim"
     # 任务工作区根目录（每会话一个子目录）

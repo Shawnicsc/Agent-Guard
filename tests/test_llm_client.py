@@ -183,3 +183,25 @@ def test_structured_call_gives_up_to_uncertain():
     assert raw == "垃圾"
     # uncertain 兜底由调用方构造
     assert SemanticFacts.uncertain().task_relation.value == "uncertain"
+
+
+@pytest.mark.parametrize("host", ["api.moonshot.cn", "api.deepseek.com"])
+@respx.mock
+def test_vendor_tool_names_round_trip_without_mutating_history(host):
+    client = make_mock_llm(f"https://{host}/v1")
+    response = json.loads(json.dumps(OPENAI_RESPONSE))
+    response["choices"][0]["message"]["tool_calls"][0]["function"]["name"] = "fs_read"
+    route = respx.post(f"https://{host}/v1/chat/completions").mock(
+        return_value=Response(200, json=response))
+    messages = [{"role": "assistant", "content": "", "tool_calls": [{
+        "id": "previous", "type": "function",
+        "function": {"name": "fs.read", "arguments": '{"path":"README.md"}'},
+    }]}]
+    tools = [{"type": "function", "function": {"name": "fs.read", "parameters": {}}}]
+    result = client.chat(messages, tools=tools)
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["tools"][0]["function"]["name"] == "fs_read"
+    assert sent["messages"][0]["tool_calls"][0]["function"]["name"] == "fs_read"
+    assert result.tool_calls[0].name == "fs.read"
+    assert tools[0]["function"]["name"] == "fs.read"
+    assert messages[0]["tool_calls"][0]["function"]["name"] == "fs.read"

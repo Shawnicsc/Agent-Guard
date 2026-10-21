@@ -50,6 +50,12 @@ class TrustLevel(StrEnum):
     LOW = "low"
 
 
+class ProtectionMode(StrEnum):
+    ENFORCE = "enforce"
+    MONITOR = "monitor"
+    OFF = "off"
+
+
 class SourceType(StrEnum):
     USER_MESSAGE = "user_message"
     WEB_PAGE = "web_page"

@@ -13,3 +13,10 @@ calls:
     expect_decision: BLOCK
     expect_rules: [deny_semantic_deviation]
     expect_executed: false
+    expect_by_protection:
+      monitor:
+        expect_executed: true
+      "off":
+        expect_decision: ALLOW
+        expect_rules: []
+        expect_executed: true

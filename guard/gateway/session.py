@@ -27,6 +27,7 @@ from guard.contracts import (
     GoalCategory,
     MissionSpec,
     PropagationBasis,
+    ProtectionMode,
     RehearsalFacts,
     SemanticFacts,
     SourceType,
@@ -48,7 +49,7 @@ from guard.gateway.normalize import PathResolver
 from guard.gateway.registry import all_tools, get_tool
 from guard.mcp_proxy import StdioMCPProxy
 from guard.policy.approval import create_approval, valid_approval
-from guard.policy.dsl import compile_policy_file
+from guard.policy.dsl import compile_policy_file, compile_policy_text
 from guard.policy.engine import PolicyEngine
 from guard.policy.predicates import EvalContext
 from guard.rehearsal.service import RehearsalService, ReplayOutcome
@@ -83,8 +84,10 @@ class GatewaySession:
         agent_capabilities: frozenset[str] | None = None,
         parent_call_id: str | None = None,
         rehearsal_service: RehearsalService | None = None,
+        protection_mode: ProtectionMode = ProtectionMode.ENFORCE,
     ) -> None:
         self.store = store
+        self.protection_mode = ProtectionMode(protection_mode)
         self.mission = mission
         self.trace_id = trace_id
         self.agent_id = agent_id
@@ -111,10 +114,15 @@ class GatewaySession:
         # 语义研判结果；C 阶段由 analyzer 写入，缺失时按 uncertain 保守处理
         self.semantic_facts: SemanticFacts | None = None
         if policy_engine is None:
-            policy_engine = _load_default_engine()
+            if self.protection_mode == ProtectionMode.OFF:
+                policy_engine = PolicyEngine(compile_policy_text(
+                    "version: protection-off\nrules: []\n"))
+            else:
+                policy_engine = _load_default_engine()
         self.policy_engine = policy_engine
         self.rehearsal_service = rehearsal_service
-        if self.rehearsal_service is None and settings.rehearsal_enabled \
+        if self.protection_mode != ProtectionMode.OFF \
+                and self.rehearsal_service is None and settings.rehearsal_enabled \
                 and getattr(policy_engine, "uses_predicate", lambda _name: False)(
                     "rehearsal_attributed"):
             self.rehearsal_service = RehearsalService(
@@ -138,6 +146,7 @@ class GatewaySession:
         policy_engine: PolicyEngine | None = None,
         semantic_analyzer: SemanticAnalyzer | None = None,
         mcp_proxy: StdioMCPProxy | None = None,
+        protection_mode: ProtectionMode = ProtectionMode.ENFORCE,
     ) -> GatewaySession:
         session_id = new_id("sess")
         trace_id = new_trace_id()
@@ -157,7 +166,9 @@ class GatewaySession:
         store.save_mission(mission)
         store.append_event(AuditEvent(
             trace_id=trace_id, type=EventType.SESSION_CREATED,
-            session_id=session_id, payload={"user_id": user_id},
+            session_id=session_id,
+            payload={"user_id": user_id,
+                     "protection_mode": ProtectionMode(protection_mode).value},
         ))
         store.append_event(AuditEvent(
             trace_id=trace_id, type=EventType.MISSION_FROZEN,
@@ -165,7 +176,7 @@ class GatewaySession:
         ))
         session = cls(store, mission, workspace_root, trace_id=trace_id,
                       policy_engine=policy_engine, semantic_analyzer=semantic_analyzer,
-                      mcp_proxy=mcp_proxy)
+                      mcp_proxy=mcp_proxy, protection_mode=protection_mode)
         direct_hits = detect_injection(goal)
         if direct_hits:
             source = ContentSource(
@@ -213,6 +224,7 @@ class GatewaySession:
             semantic_analyzer=self.semantic_analyzer, mcp_proxy=self.mcp_proxy,
             agent_id=agent_id, agent_capabilities=capabilities,
             parent_call_id=parent_call_id,
+            protection_mode=self.protection_mode,
         )
         child.taint = self.taint
         child.recent_sources = list(self.recent_sources)
@@ -237,6 +249,12 @@ class GatewaySession:
                 reason=f"工具 {envelope.tool!r} 未注册或不在能力集内",
                 arguments_hash=envelope.arguments_hash,
             )
+        elif self.protection_mode == ProtectionMode.OFF:
+            decision = Decision(
+                call_id=envelope.call_id, action=DecisionAction.ALLOW,
+                reason="保护已关闭：跳过策略与语义研判，保留执行器边界",
+                policy_version="protection-off", arguments_hash=envelope.arguments_hash,
+            )
         else:
             decision = self._decide_with_policy(envelope, spec)
 
@@ -247,7 +265,9 @@ class GatewaySession:
             parent_call_id=envelope.parent_call_id,
             decision_id=decision.decision_id,
             payload={"action": decision.action.value, "rule_ids": decision.rule_ids,
-                     "reason": decision.reason},
+                     "reason": decision.reason, "protection_mode": self.protection_mode.value,
+                     "enforcement_skipped": self.protection_mode == ProtectionMode.MONITOR
+                     and decision.action != DecisionAction.ALLOW},
         ))
         return decision
 
@@ -348,14 +368,14 @@ class GatewaySession:
                 self.store, envelope.call_id, envelope.arguments_hash,
                 target=f"{envelope.tool} {envelope.arguments}",
                 user_id=self.mission.user_id,
-            )
+            ) if self.protection_mode == ProtectionMode.ENFORCE else None
             return Decision(
                 call_id=envelope.call_id, action=result.action,
                 rule_ids=result.rule_ids, matched_fields=result.matched_fields,
                 reason="；".join(result.reasons),
                 policy_version=self.policy_engine.policy.version,
                 arguments_hash=envelope.arguments_hash,
-                approval_id=approval.approval_id,
+                approval_id=approval.approval_id if approval else None,
             )
 
         return Decision(
@@ -480,7 +500,8 @@ class GatewaySession:
             parent_call_id=envelope.parent_call_id,
             agent_id=envelope.agent_id, source_id=source.source_id if source else None,
             payload={"tool": envelope.tool, "ok": result.ok,
-                     "output": result.output[:2000], "error": result.error},
+                     "output": result.output[:2000], "error": result.error,
+                     "protection_mode": self.protection_mode.value},
         ))
         return result, source
 
@@ -495,6 +516,10 @@ class GatewaySession:
                 saved is None or saved["call_id"] != envelope.call_id or \
                 saved["action"] != decision.action.value:
             return ToolResult(ok=False, error="裁决与本次调用不匹配"), None
+        if envelope.agent_id != self.agent_id or envelope.tool not in self.agent_capabilities:
+            return ToolResult(ok=False, error="调用身份或工具能力不匹配"), None
+        if self.protection_mode == ProtectionMode.MONITOR:
+            return self.execute(envelope)
         if decision.action == DecisionAction.ALLOW:
             return self.execute(envelope)
         if decision.action == DecisionAction.CONFIRM:

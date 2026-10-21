@@ -11,10 +11,10 @@ test:
 smoke:
 	uv run pytest -m smoke
 
-# 阶段 A 验收场景（依赖本地 llama.cpp 或 AGENT_GUARD_PROVIDER=ark）
+# Demo 默认 Kimi 执行任务、DeepSeek 语义审计；.env 配置两个模型的密钥。
 run-demo:
-	uv run python examples/scenarios/runner.py examples/scenarios/a_readme.yaml
-	uv run python examples/scenarios/runner.py examples/scenarios/a_escape.yaml
+	uv run --env-file .env python examples/scenarios/runner.py examples/scenarios/a_readme.yaml
+	uv run --env-file .env python examples/scenarios/runner.py examples/scenarios/a_escape.yaml
 
 serve-local:
 	bash scripts/serve_local.sh

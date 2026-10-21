@@ -1,8 +1,32 @@
-# LLM provider 配置：本地 llama.cpp 与远程 Ark 统一走 OpenAI chat completions 协议。
+# LLM provider 配置：本地与远程模型统一走 OpenAI chat completions 协议。
 # 客户端零差别；AGENT_GUARD_PROVIDER 环境变量可覆盖 default。
 default: local
 
 providers:
+  kimi:
+    transport: openai
+    base_url: https://api.moonshot.cn/v1
+    model: kimi-k2.6
+    api_key_env: KIMI_API_KEY
+    timeout_s: 120
+    max_retries: 2
+    extra_body:
+      thinking:
+        type: disabled
+      max_tokens: 4096
+
+  deepseek:
+    transport: openai
+    base_url: https://api.deepseek.com
+    model: deepseek-flash
+    api_key_env: DEEPSEEK_API_KEY
+    timeout_s: 120
+    max_retries: 2
+    extra_body:
+      thinking:
+        type: disabled
+      max_tokens: 4096
+
   ark:
     transport: openai
     base_url: https://ark.cn-beijing.volces.com/api/v3

@@ -3,15 +3,16 @@
 
 用法：
   uv run python examples/scenarios/runner.py examples/scenarios/a_readme.yaml
-  AGENT_GUARD_PROVIDER=ark uv run python examples/scenarios/runner.py <场景>
+  uv run --env-file .env python examples/scenarios/runner.py <场景> --protection off
 
-场景为验收样例（DESIGN.md 第 11 节），依赖真实 LLM（本地 llama.cpp 或 Ark）
-与 Docker；纯确定性验收在 tests/ 中完成。
+真实 Agent 默认以 Kimi 执行任务、DeepSeek 进行语义审计，依赖 Docker。
+CLI 与 AGENT_GUARD_TASK_PROVIDER / SEMANTIC_PROVIDER / PROTECTION_MODE 可覆盖配置。
+direct 场景直接提交网关请求；其保护断言按 enforce 模式设计。
 """
 
 from __future__ import annotations
 
-import os
+import argparse
 import shutil
 import sys
 from pathlib import Path
@@ -27,6 +28,7 @@ from guard.contracts import (  # noqa: E402
     AuditEvent,
     ContentSource,
     EventType,
+    ProtectionMode,
     SourceType,
     content_hash,
 )
@@ -100,8 +102,10 @@ def check_expectations(scenario: dict, run_summary: dict, call_log: list[dict]) 
     return failures
 
 
-def _assert_call(call: dict, entry: dict) -> list[str]:
+def _assert_call(call: dict, entry: dict,
+                 protection_mode: ProtectionMode = ProtectionMode.ENFORCE) -> list[str]:
     """单条 direct 调用的断言：期望决策、命中规则、是否实际执行。"""
+    entry = {**entry, **entry.get("expect_by_protection", {}).get(protection_mode.value, {})}
     failures: list[str] = []
     decision = call.get("decision")
     action = decision.action.value if decision is not None else call.get("status")
@@ -127,8 +131,11 @@ def _assert_call(call: dict, entry: dict) -> list[str]:
     return failures
 
 
-def run_direct_scenario(scenario: dict, store: AuditStore) -> tuple[int, dict]:
-    """direct 模式：不经 LLM 与 Docker，直接断言网关裁决（确定性验收）。
+def run_direct_scenario(scenario: dict, store: AuditStore, *,
+                        semantic_provider: str | None = None,
+                        protection_mode: ProtectionMode = ProtectionMode.ENFORCE,
+                        ) -> tuple[int, dict]:
+    """direct 模式：直接构造调用，不启动 Docker；semantic 场景可调用研判模型。
 
     每条 call 结构：
       {tool, arguments, expect_decision: BLOCK|CONFIRM|ALLOW,
@@ -140,7 +147,7 @@ def run_direct_scenario(scenario: dict, store: AuditStore) -> tuple[int, dict]:
     """
     mission = scenario["mission"]
     policy_engine = None
-    if scenario.get("policy"):
+    if scenario.get("policy") and protection_mode != ProtectionMode.OFF:
         policy_engine = PolicyEngine(
             compile_policy_file(PROJECT_ROOT / scenario["policy"]))
     session = GatewaySession.create(
@@ -151,12 +158,13 @@ def run_direct_scenario(scenario: dict, store: AuditStore) -> tuple[int, dict]:
         allow_exfiltration=mission.get("allow_exfiltration", False),
         allow_push=mission.get("allow_push", False),
         policy_engine=policy_engine,
+        protection_mode=protection_mode,
     )
     seed_workspace(session.workspace_root, scenario.get("seed_files"))
     seed_content(session.workspace_root, scenario.get("seed_content"))
-    if scenario.get("semantic"):
+    if scenario.get("semantic") and protection_mode != ProtectionMode.OFF:
         providers = load_providers(settings.providers_config)
-        override = os.environ.get("AGENT_GUARD_PROVIDER") or settings.provider
+        override = semantic_provider or settings.semantic_provider
         name, provider = resolve_provider(providers, override)
         session.semantic_analyzer = SemanticAnalyzer(LLMClient(provider, name))
     # 直接模式的外部来源夹具：模拟 Agent 已经读到网页、描述或记忆。
@@ -212,7 +220,7 @@ def run_direct_scenario(scenario: dict, store: AuditStore) -> tuple[int, dict]:
         except ValueError as exc:
             if entry.get("expect_decision") == "BLOCK":
                 record["error"] = str(exc)
-                failures.extend(_assert_call(record, entry))
+                failures.extend(_assert_call(record, entry, protection_mode))
                 continue
             failures.append(f"{entry['tool']} 调用构造意外失败: {exc}")
             continue
@@ -230,9 +238,9 @@ def run_direct_scenario(scenario: dict, store: AuditStore) -> tuple[int, dict]:
         record["executed"] = result.ok or (
             decision.action.value == "ALLOW" and not result.error
         ) or ("已批准" in (decision.reason or ""))
-        failures.extend(_assert_call(record, entry))
+        failures.extend(_assert_call(record, entry, protection_mode))
 
-    print(f"[{scenario['id']}] direct 调用记录:")
+    print(f"[{scenario['id']}] direct protection={protection_mode.value} 调用记录:")
     for call in call_log:
         dec = call.get("decision")
         print(f"  {call['tool']} {str(call['arguments'])[:120]} "
@@ -264,16 +272,20 @@ def run_direct_scenario(scenario: dict, store: AuditStore) -> tuple[int, dict]:
     return 0, info
 
 
-def run_scenario(scenario_path: Path, store: AuditStore | None = None) -> int:
+def run_scenario(scenario_path: Path, store: AuditStore | None = None, *,
+                 task_provider: str | None = None, semantic_provider: str | None = None,
+                 protection_mode: ProtectionMode | None = None) -> int:
     scenario = yaml.safe_load(scenario_path.read_text())
     mission = scenario["mission"]
+    mode = ProtectionMode(protection_mode or settings.protection_mode)
 
     own_store = store is None
     if own_store:
         store = AuditStore(settings.db_path)
 
     if scenario.get("mode") == "direct":
-        rc, _info = run_direct_scenario(scenario, store)
+        rc, _info = run_direct_scenario(scenario, store, semantic_provider=semantic_provider,
+                                      protection_mode=mode)
         if own_store:
             store.close()
         return rc
@@ -286,21 +298,31 @@ def run_scenario(scenario_path: Path, store: AuditStore | None = None) -> int:
         goal_category=mission.get("goal_category", "general"),
         allow_exfiltration=mission.get("allow_exfiltration", False),
         allow_push=mission.get("allow_push", False),
+        protection_mode=mode,
     )
     seed_workspace(session.workspace_root, scenario.get("seed_files"))
+    seed_content(session.workspace_root, scenario.get("seed_content"))
 
     providers = load_providers(settings.providers_config)
-    override = os.environ.get("AGENT_GUARD_PROVIDER") or settings.provider
+    override = task_provider or settings.task_provider
     name, provider = resolve_provider(providers, override)
     llm = LLMClient(provider, name)
+    semantic_llm = None
+    semantic_label = "disabled"
+    if mode != ProtectionMode.OFF:
+        semantic_name, semantic_config = resolve_provider(
+            providers, semantic_provider or settings.semantic_provider)
+        semantic_llm = LLMClient(semantic_config, semantic_name)
+        semantic_label = f"{semantic_name}/{semantic_config.model}"
 
     spec = SandboxSpec(
         session_id=session.mission.session_id,
         image=settings.sandbox_image,
         agent_dir=settings.demo_agent_dir,
     )
-    runner = SandboxRunner(session, llm, spec, store)
-    print(f"[{scenario['id']}] provider={name} model={provider.model} "
+    runner = SandboxRunner(session, llm, spec, store, semantic_llm=semantic_llm)
+    print(f"[{scenario['id']}] task={name}/{provider.model} semantic={semantic_label} "
+          f"protection={mode.value} "
           f"session={session.mission.session_id}")
     run_summary = runner.run(scenario.get("message", mission["goal"]))
 
@@ -308,7 +330,8 @@ def run_scenario(scenario_path: Path, store: AuditStore | None = None) -> int:
     for call in runner.call_log:
         status = "OK " if call.get("ok") else "ERR"
         print(f"  [{status}] {call['tool']} {call['arguments']} "
-              f"-> {call['status']} {call['error']}")
+              f"-> {call['status']} decision={call.get('decision_status', call['status'])} "
+              f"bypassed={call.get('bypassed', False)} {call['error']}")
     print(f"[{scenario['id']}] 完成={run_summary['completed']} "
           f"摘要: {run_summary['summary'][:300]}")
 
@@ -325,7 +348,13 @@ def run_scenario(scenario_path: Path, store: AuditStore | None = None) -> int:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print(__doc__)
-        sys.exit(2)
-    sys.exit(run_scenario(Path(sys.argv[1])))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("scenario", type=Path)
+    parser.add_argument("--task-provider", help="任务执行模型，默认 kimi")
+    parser.add_argument("--semantic-provider", help="独立的语义审计模型，默认 deepseek")
+    parser.add_argument("--protection", choices=[mode.value for mode in ProtectionMode],
+                        help="enforce 拦截 / monitor 只审计放行 / off 关闭保护")
+    args = parser.parse_args()
+    sys.exit(run_scenario(args.scenario, task_provider=args.task_provider,
+                          semantic_provider=args.semantic_provider,
+                          protection_mode=args.protection))
