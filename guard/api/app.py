@@ -17,7 +17,7 @@ from guard.semantic.analyzer import SemanticAnalyzer
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Agent Guard", version="0.1.0")
+    app = FastAPI(title="TraceShield", version="0.1.0")
     app.state.store = AuditStore(settings.db_path)
     app.state.sessions = {}  # session_id -> GatewaySession
     # 会话共享同一策略引擎实例；GET /policies 也从这里读取

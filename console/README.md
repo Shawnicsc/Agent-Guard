@@ -1,4 +1,4 @@
-# Agent Guard 独立安全控制台
+# TraceShield 独立安全控制台
 
 控制台全部位于 `console/`。不改动 `guard/`、默认策略、审计表结构或原有网关 API；无需 LLM、Docker，也不会启动 Agent 或重跑任何实验。
 

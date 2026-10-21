@@ -248,7 +248,7 @@ def evaluations() -> dict:
 
 
 def create_console(db_path: Path, policy_path: Path) -> FastAPI:
-    app = FastAPI(title="Agent Guard · Read-only Console", docs_url=None, redoc_url=None)
+    app = FastAPI(title="TraceShield · Read-only Console", docs_url=None, redoc_url=None)
     dist = ROOT / "console/dist"
 
     @app.get("/api/console/bootstrap")

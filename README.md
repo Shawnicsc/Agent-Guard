@@ -1,6 +1,6 @@
-# Agent-Guard：基于意图对齐与多源溯源的间接提示词注入与 Agent 防护系统
+# TraceShield:基于意图对齐与多源溯源的Agent间接提示词注入防护系统
 
-Agent-Guard 面向大语言模型 Agent 读取文件、检索网页、调用工具和使用记忆时遇到的间接提示词注入问题，在工具执行前检查候选动作是否符合用户原始任务，并结合来源追踪、敏感数据标签和安全策略决定是否执行。
+TraceShield 面向大语言模型 Agent 读取文件、检索网页、调用工具和使用记忆时遇到的间接提示词注入问题，在工具执行前检查候选动作是否符合用户原始任务，并结合来源追踪、敏感数据标签和安全策略决定是否执行。
 
 项目提供工具安全网关、Docker 沙箱和 Web 审计控制台，支持执行前裁决、受控执行与攻击链路调查。
 
@@ -23,7 +23,7 @@ Agent-Guard 面向大语言模型 Agent 读取文件、检索网页、调用工�
 
 间接提示词注入通常藏在 Agent 正常读取的外部内容中，例如 README、网页、邮件、工具描述、MCP 返回或历史记忆。攻击者将“忽略之前的任务”“先把数据发到某个地址”等指令混入这些内容，诱导 Agent 执行任务之外的操作。
 
-Agent-Guard 在创建会话时冻结用户任务，将外部内容作为带有来源和信任级别的证据，在文件写入、命令执行、网络请求、Git 推送、记忆写入和子 Agent 派发等动作执行前进行检查。
+TraceShield 在创建会话时冻结用户任务，将外部内容作为带有来源和信任级别的证据，在文件写入、命令执行、网络请求、Git 推送、记忆写入和子 Agent 派发等动作执行前进行检查。
 
 核心流程：**冻结原始意图 → 记录内容来源 → 分析候选动作 → 执行前裁决 → 受控执行 → 保存与展示证据。**
 
@@ -119,7 +119,7 @@ Docker 默认采用无网络、只读根文件系统、非特权 UID、移除 ca
 ## 3. 项目结构
 
 ```text
-Agent-Guard/
+TraceShield/
 ├── guard/
 │   ├── api/                 # 会话、裁决、批准、策略和溯源 REST API
 │   ├── gateway/             # Agent 驱动器、工具注册表、会话和执行器
@@ -182,34 +182,73 @@ Python 依赖见 [pyproject.toml](pyproject.toml)，前端依赖见 [console/pac
 
 ### 5.2 配置模型角色
 
-在 [configs/providers.yaml](configs/providers.yaml) 中登记模型服务的地址、模型标识和认证参数。
+模型配置由根目录 `.env` 与 [configs/providers.yaml](configs/providers.yaml) 配合完成：
 
-例如，在文件的 `providers` 下添加名为 `auditor` 的配置。以下地址和模型标识需要替换为实际部署的审计服务：
+| 文件 | 配置内容 |
+| --- | --- |
+| `.env` | 实际 API Key、任务模型与语义审计模型各自选择的 provider、保护模式 |
+| `configs/providers.yaml` | 每个 provider 的服务地址 `base_url`、模型名称 `model`、密钥环境变量名 `api_key_env` 及请求参数 |
+
+**使用仓库已有的 Kimi 任务模型与 DeepSeek 语义审计模型配置时，只需填写 `.env`；更换服务地址或具体模型名称时，再修改 YAML。**
+
+在项目根目录创建 `.env`；如果文件已存在，添加或修改以下条目，保留其他配置：
+
+```dotenv
+# 任务模型：理解任务、生成工具调用
+AGENT_GUARD_TASK_PROVIDER=kimi
+KIMI_API_KEY=替换为你的Kimi密钥
+
+# 语义审计模型：检查候选工具调用是否偏离冻结任务
+AGENT_GUARD_SEMANTIC_PROVIDER=deepseek
+DEEPSEEK_API_KEY=替换为你的DeepSeek密钥
+
+# 保护模式：enforce / monitor / off
+AGENT_GUARD_PROTECTION_MODE=enforce
+```
+
+provider 名称必须对应 YAML 中 `providers` 下的条目，当前密钥映射为：
+
+| 角色 | provider | YAML 中的 `api_key_env` | `.env` 中填写的密钥 |
+| --- | --- | --- | --- |
+| 任务模型 | `kimi` | `KIMI_API_KEY` | `KIMI_API_KEY=你的Kimi密钥` |
+| 语义审计模型 | `deepseek` | `DEEPSEEK_API_KEY` | `DEEPSEEK_API_KEY=你的DeepSeek密钥` |
+
+`api_key_env` 填环境变量名称，实际密钥放在 `.env`，不要写入 YAML。自定义服务时，在 YAML 的 `providers` 下新增条目，例如：
 
 ```yaml
   auditor:
     transport: openai
     base_url: http://127.0.0.1:9000/v1
     model: your-audit-model
-    api_key_env: null
+    api_key_env: AUDITOR_API_KEY
     timeout_s: 120
     max_retries: 2
 ```
 
-如所选服务需要认证，通过其 `api_key_env` 指定的环境变量提供凭据。运行配置可写入根目录 `.env` 并通过 `uv run --env-file .env ...` 加载。
+将地址和模型名称替换为实际值，然后在 `.env` 中设置 `AGENT_GUARD_SEMANTIC_PROVIDER=auditor` 和 `AUDITOR_API_KEY=你的审计服务密钥`。服务无需认证时，将 `api_key_env` 设为 `null` 即可。`auditor` 是自定义示例，仓库未内置该条目。
+
+运行 Demo 时显式加载 `.env`：
+
+```bash
+uv run --env-file .env python examples/scenarios/runner.py examples/scenarios/a_readme.yaml
+```
+
+Demo 入口本身不会自动读取 `.env`；`make run-demo` 已包含 `--env-file .env`。也可将相同变量通过 shell 的 `export` 设置后运行。启动输出中的 `task=... semantic=... protection=...` 可用于核对实际选择的模型角色与模式。
+
+`.env` 已加入 Git 忽略规则。Linux / macOS 下可限制文件权限：
 
 ```bash
 chmod 600 .env
 ```
 
-`.env` 已加入 Git 忽略规则。`auditor` 是部署示例中的名称，使用前需先登记对应服务。
+项目更名为 TraceShield 后，现有 `AGENT_GUARD_*` 环境变量、`guard` Python 模块与默认审计库名 `agent-guard.db` 继续沿用，兼容已有部署。
 
 ### 5.3 配置优先级
 
 | 配置 | 环境变量 / 参数 | 默认值或说明 |
 | --- | --- | --- |
-| Demo 任务模型 | `AGENT_GUARD_TASK_PROVIDER` / `--task-provider` | 选择已登记的任务 provider |
-| Demo 审计模型 | `AGENT_GUARD_SEMANTIC_PROVIDER` / `--semantic-provider` | 选择已登记的审计 provider |
+| Demo 任务模型 | `AGENT_GUARD_TASK_PROVIDER` / `--task-provider` | `kimi` |
+| Demo 审计模型 | `AGENT_GUARD_SEMANTIC_PROVIDER` / `--semantic-provider` | `deepseek` |
 | Demo 保护模式 | `AGENT_GUARD_PROTECTION_MODE` / `--protection` | `enforce` |
 | 审计数据库 | `AGENT_GUARD_DB_PATH` | 项目根目录 `agent-guard.db` |
 | 会话工作区 | `AGENT_GUARD_WORKSPACES_ROOT` | 项目根目录 `workspaces/` |
@@ -233,17 +272,17 @@ uv run python console/server.py --db "$PWD/agent-guard.db"
 
 ## 6. Demo 演示方式
 
-Demo 使用 Kimi 执行任务，由独立的语义审计角色检查候选工具调用。两个角色分别维护客户端与上下文，模型服务通过部署配置接入。
+Demo 默认使用 Kimi 执行任务、DeepSeek 进行语义审计。两个角色分别维护客户端与上下文，模型服务通过部署配置接入。
 
-完成第 5 节部署后，在 `.env` 中选择演示使用的 provider：
+完成第 5.2 节的 `.env` 配置后，确认已填写 `KIMI_API_KEY`、`DEEPSEEK_API_KEY`，并选择演示使用的 provider：
 
 ```dotenv
 AGENT_GUARD_TASK_PROVIDER=kimi
-AGENT_GUARD_SEMANTIC_PROVIDER=auditor
+AGENT_GUARD_SEMANTIC_PROVIDER=deepseek
 AGENT_GUARD_PROTECTION_MODE=enforce
 ```
 
-任务角色使用已有的 `kimi` 配置；`auditor` 需按第 5.2 节登记为实际可用的审计服务。
+这两个 provider 已在 YAML 中登记。如使用自定义审计服务，按第 5.2 节新增 provider 并修改对应角色变量。
 
 ### 6.1 正常读取与审计链路
 
@@ -375,7 +414,7 @@ AGENT_GUARD_SMOKE_SCENARIO=1 uv run --env-file .env pytest \
 
 ```bash
 uv run --env-file .env python scripts/bench.py \
-  --provider auditor --output docs/report.md
+  --provider deepseek --output docs/report.md
 ```
 
 语料位于 [examples/attack_corpus/cases.yaml](examples/attack_corpus/cases.yaml)，每条已经给定目标、来源、工具与参数。脚本逐例创建会话，硬规则先处理，满足条件时调用语义模型；任务动作由语料给定，不由任务模型生成。
@@ -452,7 +491,7 @@ uv run python console/server.py \
 第三方 Agent 可通过独立的网关 API 获取裁决。内置 DemoAgent 使用 stdio，不依赖此服务：
 
 ```bash
-AGENT_GUARD_PROVIDER=auditor uv run --env-file .env uvicorn \
+AGENT_GUARD_PROVIDER=deepseek uv run --env-file .env uvicorn \
   guard.api.app:create_app --factory --host 127.0.0.1 --port 8000
 ```
 

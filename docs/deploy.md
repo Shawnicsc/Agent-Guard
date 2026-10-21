@@ -1,6 +1,6 @@
 # 部署说明（初稿）
 
-> Agent Guard —— 面向 LLM Agent 提示注入与工具滥用的检测防御系统。
+> TraceShield:基于意图对齐与多源溯源的Agent间接提示词注入防护系统
 > 本文档在阶段 D 定稿；当前内容描述阶段 A（可控执行链）的部署方式。
 
 ## 1. 硬件要求
@@ -24,7 +24,7 @@
 ### 3.1 初始化
 
 ```bash
-git clone <repo> && cd agent-guard
+git clone <repo> TraceShield && cd TraceShield
 uv sync                 # 安装依赖（Python 3.12 锁定）
 ```
 

@@ -1,7 +1,7 @@
 [project]
-name = "agent-guard"
+name = "traceshield"
 version = "0.1.0"
-description = "面向 LLM Agent 提示注入与工具滥用的检测防御系统"
+description = "基于意图对齐与多源溯源的Agent间接提示词注入防护系统"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi>=0.115",
