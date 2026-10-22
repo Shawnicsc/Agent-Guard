@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sqlite3
 import sys
@@ -30,6 +29,7 @@ from console.presentation import build_presentation  # noqa: E402
 from guard.audit.history import query_history  # noqa: E402
 from guard.audit.redact import redact_payload, redact_text  # noqa: E402
 from guard.audit.trace import rebuild_dag  # noqa: E402
+from guard.naming import archive_shards, default_db_path, env_value  # noqa: E402
 
 REPORTS = {
     "report.md", "bankfull_banking_report.md", "cve_reproduction_report.md",
@@ -203,9 +203,9 @@ def evaluations() -> dict:
     """Aggregate checked-in artifacts only; never runs a model or an experiment."""
     arms = []
     warnings = []
-    for arm in ("direct", "agent_guard", "agent_guard_monitor"):
+    for arm in ("direct", "traceshield", "traceshield_monitor"):
         attacks, clean, files = [], [], []
-        for path in sorted((ROOT / "docs").glob(f"bankfull_{arm}_shard*.json")):
+        for path in archive_shards(ROOT / "docs", arm):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 for row in data.get("rows", []):
@@ -369,10 +369,10 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8001)
     parser.add_argument("--db", type=Path,
-                        default=Path(os.environ.get(
-                            "AGENT_GUARD_DB_PATH", ROOT / "agent-guard.db")))
+                        default=Path(env_value(
+                            "TRACESHIELD_DB_PATH", str(default_db_path(ROOT)))))
     parser.add_argument("--policy", type=Path,
-                        default=Path(os.environ.get(
-                            "AGENT_GUARD_POLICY_FILE", ROOT / "policies/default.yaml")))
+                        default=Path(env_value(
+                            "TRACESHIELD_POLICY_FILE", str(ROOT / "policies/default.yaml"))))
     args = parser.parse_args()
     uvicorn.run(create_console(args.db, args.policy), host=args.host, port=args.port)

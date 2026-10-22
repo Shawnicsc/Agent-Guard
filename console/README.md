@@ -27,7 +27,7 @@ uv run python console/server.py
 uv run python console/server.py --db docs/cve_reproduction.db --policy policies/cve_repro.yaml
 ```
 
-默认读取项目根目录的 `agent-guard.db` 和 `policies/default.yaml`。也支持 `AGENT_GUARD_DB_PATH`、`AGENT_GUARD_POLICY_FILE`；`--db` / `--policy` 优先。审计库不存在时不创建数据库，页面显示缺失状态，历史对抗报告仍然可读。
+默认读取项目根目录的 `traceshield.db` 和 `policies/default.yaml`。也支持 `TRACESHIELD_DB_PATH`、`TRACESHIELD_POLICY_FILE`；`--db` / `--policy` 优先。审计库不存在时不创建数据库，页面显示缺失状态，历史对抗报告仍然可读。
 
 ## 开发方式
 

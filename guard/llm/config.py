@@ -6,12 +6,13 @@ provider 差异只体现在 base_url / api_key / timeout / extra_body。
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
+
+from guard.naming import env_value
 
 
 class ProviderConfig(BaseModel):
@@ -26,7 +27,7 @@ class ProviderConfig(BaseModel):
     def api_key(self) -> str | None:
         if self.api_key_env is None:
             return None
-        return os.environ.get(self.api_key_env)
+        return env_value(self.api_key_env)
 
 
 class ProvidersFile(BaseModel):
@@ -35,7 +36,7 @@ class ProvidersFile(BaseModel):
 
 
 def load_providers(path: Path) -> ProvidersFile:
-    data = yaml.safe_load(path.read_text())
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
     return ProvidersFile.model_validate(data)
 
 

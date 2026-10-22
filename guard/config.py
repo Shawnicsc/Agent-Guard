@@ -4,21 +4,35 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
+from pydantic_settings import BaseSettings, EnvSettingsSource, SettingsConfigDict
 
 from guard.contracts import ProtectionMode
+from guard.naming import ENV_PREFIX, LEGACY_ENV_PREFIX, default_db_path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="AGENT_GUARD_")
+    model_config = SettingsConfigDict(env_prefix=ENV_PREFIX)
+
+    @classmethod
+    def settings_customise_sources(
+        cls, settings_cls, init_settings, env_settings, dotenv_settings, file_secret_settings,
+    ):
+        return (
+            init_settings,
+            env_settings,
+            EnvSettingsSource(settings_cls, env_prefix=LEGACY_ENV_PREFIX),
+            dotenv_settings,
+            file_secret_settings,
+        )
 
     # 数据库（SQLite 起步，DESIGN.md 第 4 节）
-    db_path: Path = PROJECT_ROOT / "agent-guard.db"
+    db_path: Path = Field(default_factory=lambda: default_db_path(PROJECT_ROOT))
     # LLM provider 配置文件
     providers_config: Path = PROJECT_ROOT / "configs" / "providers.yaml"
-    # provider 选择，环境变量 AGENT_GUARD_PROVIDER 覆盖
+    # provider 选择，环境变量 TRACESHIELD_PROVIDER 覆盖
     provider: str = "local"
     # Demo 的任务执行与语义审计分别配置；通用 API/bench 继续使用 provider。
     task_provider: str = "kimi"

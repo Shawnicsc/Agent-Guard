@@ -6,7 +6,7 @@
   uv run --env-file .env python examples/scenarios/runner.py <场景> --protection off
 
 真实 Agent 默认以 Kimi 执行任务、DeepSeek 进行语义审计，依赖 Docker。
-CLI 与 AGENT_GUARD_TASK_PROVIDER / SEMANTIC_PROVIDER / PROTECTION_MODE 可覆盖配置。
+CLI 与 TRACESHIELD_TASK_PROVIDER / SEMANTIC_PROVIDER / PROTECTION_MODE 可覆盖配置。
 direct 场景直接提交网关请求；其保护断言按 enforce 模式设计。
 """
 

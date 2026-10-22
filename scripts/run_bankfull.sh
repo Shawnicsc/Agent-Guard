@@ -5,7 +5,7 @@
 set -u
 cd "$(dirname "$0")/.."
 
-CHATINJECT=/tmp/chatinject-agent-guard/src/agentdojo/attacks/multi_turn_data/with_utility_multi_turn_7_generation_output.json
+CHATINJECT=${CHATINJECT:-/tmp/chatinject-traceshield/src/agentdojo/attacks/multi_turn_data/with_utility_multi_turn_7_generation_output.json}
 ATTACKS="chatinject_plain_multiturn chatinject_kimi_k2 chatinject_kimi_k2_multiturn"
 RANGES=("0:36" "36:72" "72:108" "108:144")
 mkdir -p logs
@@ -22,7 +22,7 @@ run_shard() {  # arm shard_idx range
     > "logs/bankfull_${arm}_shard${idx}.log" 2>&1
 }
 
-for arm in direct agent_guard agent_guard_monitor; do
+for arm in direct traceshield traceshield_monitor; do
   echo "[$(date +%H:%M:%S)] 启动 arm=$arm 的 4 个分片..."
   for i in 0 1 2 3; do
     run_shard "$arm" "$i" "${RANGES[$i]}" &

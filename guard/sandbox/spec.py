@@ -27,7 +27,7 @@ class SandboxSpec:
 
     @property
     def container_name(self) -> str:
-        return f"agent-guard-{self.session_id}"
+        return f"traceshield-{self.session_id}"
 
     def run_command(self) -> list[str]:
         """完整的 docker run 命令行。容器入口即演示 Agent（stdio JSON-lines 协议）。"""

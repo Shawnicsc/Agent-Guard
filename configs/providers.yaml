@@ -1,5 +1,5 @@
 # LLM provider 配置：本地与远程模型统一走 OpenAI chat completions 协议。
-# 客户端零差别；AGENT_GUARD_PROVIDER 环境变量可覆盖 default。
+# 客户端零差别；TRACESHIELD_PROVIDER 环境变量可覆盖 default。
 default: local
 
 providers:
