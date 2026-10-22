@@ -89,7 +89,7 @@ def run_benchmark(corpus: Path, provider_name: str | None = None,
     if any(case.get("sources") for case in cases) and not client.health():
         raise RuntimeError(f"模型服务不可用: {name} {provider.base_url}")
     results: list[dict] = []
-    with tempfile.TemporaryDirectory(prefix="agent-guard-bench-") as temp:
+    with tempfile.TemporaryDirectory(prefix="traceshield-bench-") as temp:
         base = Path(temp)
         audit_path = db_path or settings.db_path
         audit_path.parent.mkdir(parents=True, exist_ok=True)
@@ -169,7 +169,7 @@ def run_benchmark(corpus: Path, provider_name: str | None = None,
 def render_report(report: dict) -> str:
     metrics = report["metrics"]
     lines = [
-        "# Agent Guard 对抗验证报告", "",
+        "# TraceShield 对抗验证报告", "",
         f"运行时间（UTC）：{report['timestamp']}",
         f"模型：{report['provider']} / {report['model']}",
         "",

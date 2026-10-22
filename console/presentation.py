@@ -9,6 +9,8 @@ from pathlib import Path
 
 import yaml
 
+from guard.naming import archive_shards
+
 
 def wilson(successes: int, total: int) -> list[float] | None:
     if not total:
@@ -31,8 +33,8 @@ def build_presentation(root: Path) -> dict:
                       'updated_at': datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat()})
         return value
 
-    for arm in ('direct', 'agent_guard_monitor', 'agent_guard'):
-        for path in sorted((root / 'docs').glob(f'bankfull_{arm}_shard*.json')):
+    for arm in ('direct', 'traceshield_monitor', 'traceshield'):
+        for path in archive_shards(root / 'docs', arm):
             try:
                 data = read(path)
                 metadata.append({key: data.get(key) for key in (
@@ -62,7 +64,7 @@ def build_presentation(root: Path) -> dict:
                 warnings.append(f'{path.name}: {exc}')
 
     arms = []
-    for arm in ('direct', 'agent_guard_monitor', 'agent_guard'):
+    for arm in ('direct', 'traceshield_monitor', 'traceshield'):
         selected = [run for run in runs if run['arm'] == arm]
         successes = sum(run['outcome'] == 'success' for run in selected)
         unknown = sum(run['outcome'] == 'unknown' for run in selected)
@@ -100,14 +102,17 @@ def build_presentation(root: Path) -> dict:
         rehearsal['summary'] = {
             'total': len(rehearsal['runs']), 'injected': len(injected), 'benign': len(benign),
             'manifested': sum(r['manifested'] is True for r in injected),
-            'blocked': sum(r['manifested'] is True and bool(r['attributed_blocks']) for r in injected),
+            'blocked': sum(r['manifested'] is True and bool(r['attributed_blocks'])
+                           for r in injected),
             'benign_blocks': sum(bool(r['attributed_blocks']) for r in benign),
-            'events': len(events), 'unavailable': sum(e.get('status') == 'unavailable' for e in events),
+            'events': len(events),
+            'unavailable': sum(e.get('status') == 'unavailable' for e in events),
             'p50': data.get('summary', {}).get('latency_ms_p50'),
             'p95': data.get('summary', {}).get('latency_ms_p95'),
             'tokens': sum(r['agent_tokens'] or 0 for r in rehearsal['runs']),
         }
-        task_data = yaml.safe_load((root / 'examples/rehearsal/tasks.yaml').read_text(encoding='utf-8'))
+        task_path = root / 'examples/rehearsal/tasks.yaml'
+        task_data = yaml.safe_load(task_path.read_text(encoding='utf-8'))
         rehearsal['tasks'] = {t['id']: {'instruction': t.get('instruction'),
                                       'inject_file': t.get('inject_file')}
                               for t in task_data.get('tasks', [])}

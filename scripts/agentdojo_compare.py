@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AgentDojo v1.2.2: direct model vs Agent Guard, paired end-to-end runs.
+"""AgentDojo v1.2.2: direct model vs TraceShield, paired end-to-end runs.
 
 Requires the optional AgentDojo environment described in docs/testing.md.
 Task pairs are fixed before observing model outcomes; --plan makes no API calls.
@@ -56,6 +56,7 @@ from guard.contracts import (  # noqa: E402
 from guard.gateway.session import GatewaySession  # noqa: E402
 from guard.llm.client import LLMClient  # noqa: E402
 from guard.llm.config import ProviderConfig  # noqa: E402
+from guard.naming import canonical_arm, env_value  # noqa: E402
 from guard.semantic.analyzer import SemanticAnalyzer  # noqa: E402
 
 MODEL = "deepseek-flash"  # DeepSeek V4.1 Flash official API alias
@@ -293,7 +294,7 @@ class GuardedRuntime(FunctionsRuntime):
             "bypassed": bool(MONITOR and decision.action != DecisionAction.ALLOW),
         })
         if decision.action != DecisionAction.ALLOW and not MONITOR:
-            return "", f"Agent Guard {decision.action.value}: {decision.reason}"
+            return "", f"TraceShield {decision.action.value}: {decision.reason}"
 
         result, error = super().run_function(env, function, kwargs, raise_on_error)
         if error is None:
@@ -350,7 +351,7 @@ class GuardedPipeline(AgentPipeline):
 def make_pipeline(guarded: bool, store: AuditStore, workspaces_root: Path,
                   run_context: RunContext | None = None):
     local = BASE_URL.startswith("http://127.0.0.1:")
-    agent_client = OpenAI(api_key=os.environ.get(API_KEY_ENV, "local"),
+    agent_client = OpenAI(api_key=env_value(API_KEY_ENV, "local"),
                           base_url=BASE_URL, timeout=300 if local else 90,
                           max_retries=0 if local else 6)
     llm = BenchmarkLLM(agent_client)
@@ -371,7 +372,7 @@ def make_pipeline(guarded: bool, store: AuditStore, workspaces_root: Path,
                           if MODEL == "kimi-k2.6" else {})
     semantic_client = LLMClient(ProviderConfig(
         base_url=detector_url, model=detector_model,
-        api_key_env=detector_key_env if detector_key_env in os.environ else None,
+        api_key_env=detector_key_env if env_value(detector_key_env) is not None else None,
         timeout_s=300 if local and GUARD_DETECTOR == "same" else 90,
         max_retries=0 if local and GUARD_DETECTOR == "same" else 6,
         extra_body=detector_extra), GUARD_DETECTOR)
@@ -400,7 +401,7 @@ def run_arm(suite, user_task, injection_task, injections, guarded, store,
     )
     runtime = pipeline.runtime if guarded else None
     return {
-        "arm": arm_name or ("agent_guard" if guarded else "direct"),
+        "arm": arm_name or ("traceshield" if guarded else "direct"),
         "utility": utility,
         "attack_success": attack_success if injection_task is not None else None,
         "elapsed_s": round(time.monotonic() - started, 2),
@@ -424,7 +425,7 @@ def main() -> int:
     parser.add_argument("--kimi-thinking", choices=["disabled", "enabled"],
                         default="disabled")
     parser.add_argument("--guard-detector", choices=["same", "deepseek-v41-flash"],
-                        default="same", help="Agent Guard 的语义检测模型")
+                        default="same", help="TraceShield 的语义检测模型")
     parser.add_argument("--clean-only", action="store_true")
     parser.add_argument("--skip-clean", action="store_true")
     parser.add_argument("--plan", action="store_true", help="只校验并显示固定任务对")
@@ -435,8 +436,8 @@ def main() -> int:
     parser.add_argument("--pair-index", type=int, help="只运行指定任务对，0 起始索引")
     parser.add_argument("--pair-range", metavar="START:END",
                         help="只运行任务对切片（END 不含），用于并行分片")
-    parser.add_argument("--arm",
-                        choices=["direct", "agent_guard", "agent_guard_monitor", "both"],
+    parser.add_argument("--arm", type=canonical_arm,
+                        choices=["direct", "traceshield", "traceshield_monitor", "both"],
                         default="both")
     parser.add_argument("--attacks", nargs="+",
                         choices=sorted([*ATTACKS, *PAPER_ATTACKS, *CHATINJECT_ATTACKS]))
@@ -453,15 +454,15 @@ def main() -> int:
     LOCAL_MAX_TOKENS = args.local_max_tokens
     KIMI_THINKING = args.kimi_thinking
     GUARD_DETECTOR = args.guard_detector
-    MONITOR = args.arm == "agent_guard_monitor"
+    MONITOR = args.arm == "traceshield_monitor"
     if args.provider == "qwen3-4b":
         MODEL = "models/Qwen3-4B-Q4_K_M.gguf"
         BASE_URL = "http://127.0.0.1:8080/v1"
-        API_KEY_ENV = "AGENT_GUARD_LOCAL_API_KEY"
+        API_KEY_ENV = "TRACESHIELD_LOCAL_API_KEY"
     elif args.provider == "llama3-8b":
         MODEL = "llama3-8b-instruct-q4_k_m"
         BASE_URL = "http://127.0.0.1:18080/v1"
-        API_KEY_ENV = "AGENT_GUARD_LOCAL_API_KEY"
+        API_KEY_ENV = "TRACESHIELD_LOCAL_API_KEY"
     elif args.provider == "kimi-k2.6":
         MODEL = "kimi-k2.6"
         BASE_URL = "https://api.moonshot.cn/v1"
@@ -504,7 +505,7 @@ def main() -> int:
             parser.error("多轮 ChatInject 必须提供 --chatinject-dialogues JSON 文件")
     if not args.plan and args.provider in {"deepseek", "kimi-k2.6"}:
         load_dotenv(ROOT / ".env")
-        if not os.environ.get(API_KEY_ENV):
+        if not env_value(API_KEY_ENV):
             parser.error(f"{API_KEY_ENV} 未配置")
     if not args.plan and args.arm != "direct" and GUARD_DETECTOR == "deepseek-v41-flash":
         load_dotenv(ROOT / ".env")
@@ -545,7 +546,7 @@ def main() -> int:
             }[args.provider]
             placeholder = AgentPipeline([])
             placeholder.name = MODEL
-            arms = (["direct", "agent_guard"] if args.arm == "both" else [args.arm])
+            arms = (["direct", "traceshield"] if args.arm == "both" else [args.arm])
             # banking_full 基线去重：同一用户任务只在首个注入对上跑一次无攻击基线。
             skip_clean = (args.skip_clean or
                           (args.pair_set == "banking_full"
@@ -577,7 +578,8 @@ def main() -> int:
                                        attack_name))
                 if (prior is not None and prior.get("runs")
                         and all("error" not in run for run in prior["runs"])
-                        and all(any(run.get("arm") == arm for run in prior["runs"])
+                        and all(any(canonical_arm(run.get("arm", "")) == arm
+                                    for run in prior["runs"])
                                 for arm in arms)):
                     rows.append(prior)
                     print(f"{suite_name}/{user_id}/{condition}/{attack_name or '-'}: "
@@ -596,7 +598,7 @@ def main() -> int:
                 for arm in arms:
                     try:
                         result = run_arm(suite, user_task, target, values,
-                                         arm in {"agent_guard", "agent_guard_monitor"},
+                                         arm in {"traceshield", "traceshield_monitor"},
                                          store,
                                          args.output.parent / "workspaces",
                                          arm_name=arm, run_context=RunContext(**{
@@ -628,7 +630,7 @@ def main() -> int:
                                                          else MODEL)
                                 if args.arm != "direct" else None,
                                 "guard_monitor_only": True
-                                if args.arm == "agent_guard_monitor" else None,
+                                if args.arm == "traceshield_monitor" else None,
                                 "benchmark_version": BENCHMARK_VERSION,
                                 "pair_set": args.pair_set,
                                 "paper_cache_target": "deepseek-v4-flash/no_defense"

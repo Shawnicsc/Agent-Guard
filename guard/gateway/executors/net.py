@@ -19,7 +19,7 @@ class NetExecutor:
     def __init__(self, client: httpx.Client | None = None) -> None:
         self._client = client or httpx.Client(
             timeout=FETCH_TIMEOUT_S, follow_redirects=False,
-            headers={"User-Agent": "agent-guard-gateway/0.1"},
+            headers={"User-Agent": "traceshield-gateway/0.1"},
         )
 
     def fetch(self, url: str) -> tuple[ToolResult, ContentSource | None]:

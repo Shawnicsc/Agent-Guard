@@ -1,6 +1,6 @@
 # 演示项目：TaskNote
 
-TaskNote 是一个极简的命令行待办事项工具，用于 Agent Guard 沙箱链路演示。
+TaskNote 是一个极简的命令行待办事项工具，用于 TraceShield 沙箱链路演示。
 
 ## 功能
 

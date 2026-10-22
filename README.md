@@ -114,7 +114,7 @@ flowchart TD
 
 `exec.run` 在任务容器内执行；文件、网络、Git 和记忆工具由宿主侧执行器管理。文件工具使用宿主会话工作区，默认不与容器的 `/workspace` 临时目录同步。MCP 是可选接入路径，默认 Demo 没有配置 MCP Server。
 
-Docker 默认采用无网络、只读根文件系统、非特权 UID、移除 capabilities 和资源配额。隔离彩排由 `AGENT_GUARD_REHEARSAL_ENABLED` 控制，默认关闭；启用后可在净化来源的副本中重跑，为归因提供补充证据。绊网命中用于记录行为信号，告警本身不等于已经阻断。
+Docker 默认采用无网络、只读根文件系统、非特权 UID、移除 capabilities 和资源配额。隔离彩排由 `TRACESHIELD_REHEARSAL_ENABLED` 控制，默认关闭；启用后可在净化来源的副本中重跑，为归因提供补充证据。绊网命中用于记录行为信号，告警本身不等于已经阻断。
 
 ## 3. 项目结构
 
@@ -145,7 +145,7 @@ TraceShield/
 ├── tests/                   # 单元、集成、沙箱与冒烟测试
 ├── docs/                    # 历史实验报告、结果和设计补充
 ├── workspaces/              # 运行时会话工作区，Git 忽略
-└── agent-guard.db            # 默认运行时审计库，Git 忽略
+└── traceshield.db            # 默认运行时审计库，Git 忽略
 ```
 
 ## 4. 环境需求
@@ -178,7 +178,7 @@ npm --prefix console run build
 docker pull python:3.12-slim
 ```
 
-Python 依赖见 [pyproject.toml](pyproject.toml)，前端依赖见 [console/package.json](console/package.json)。运行真实 Agent 前可通过 `docker info` 检查 daemon 与当前用户权限。
+Python 依赖见 [pyproject.toml](pyproject.toml)，前端依赖见 [console/package.json](console/package.json)。Windows 会额外安装 `tzdata`，用于历史报告的本地时区查询。运行真实 Agent 前可通过 `docker info` 检查 daemon 与当前用户权限。
 
 ### 5.2 配置模型角色
 
@@ -195,15 +195,15 @@ Python 依赖见 [pyproject.toml](pyproject.toml)，前端依赖见 [console/pac
 
 ```dotenv
 # 任务模型：理解任务、生成工具调用
-AGENT_GUARD_TASK_PROVIDER=kimi
+TRACESHIELD_TASK_PROVIDER=kimi
 KIMI_API_KEY=替换为你的Kimi密钥
 
 # 语义审计模型：检查候选工具调用是否偏离冻结任务
-AGENT_GUARD_SEMANTIC_PROVIDER=deepseek
+TRACESHIELD_SEMANTIC_PROVIDER=deepseek
 DEEPSEEK_API_KEY=替换为你的DeepSeek密钥
 
 # 保护模式：enforce / monitor / off
-AGENT_GUARD_PROTECTION_MODE=enforce
+TRACESHIELD_PROTECTION_MODE=enforce
 ```
 
 provider 名称必须对应 YAML 中 `providers` 下的条目，当前密钥映射为：
@@ -225,7 +225,7 @@ provider 名称必须对应 YAML 中 `providers` 下的条目，当前密钥映�
     max_retries: 2
 ```
 
-将地址和模型名称替换为实际值，然后在 `.env` 中设置 `AGENT_GUARD_SEMANTIC_PROVIDER=auditor` 和 `AUDITOR_API_KEY=你的审计服务密钥`。服务无需认证时，将 `api_key_env` 设为 `null` 即可。`auditor` 是自定义示例，仓库未内置该条目。
+将地址和模型名称替换为实际值，然后在 `.env` 中设置 `TRACESHIELD_SEMANTIC_PROVIDER=auditor` 和 `AUDITOR_API_KEY=你的审计服务密钥`。服务无需认证时，将 `api_key_env` 设为 `null` 即可。`auditor` 是自定义示例，仓库未内置该条目。
 
 运行 Demo 时显式加载 `.env`：
 
@@ -241,20 +241,22 @@ Demo 入口本身不会自动读取 `.env`；`make run-demo` 已包含 `--env-fi
 chmod 600 .env
 ```
 
-项目更名为 TraceShield 后，现有 `AGENT_GUARD_*` 环境变量、`guard` Python 模块与默认审计库名 `agent-guard.db` 继续沿用，兼容已有部署。
+项目运行配置统一使用 `TRACESHIELD_*`，新安装默认审计库为 `traceshield.db`。所有配置读取端兼容旧 `AGENT_GUARD_*`；同名配置同时存在时，新变量优先。若未显式指定数据库且只有旧 `agent-guard.db` 存在，会继续读取旧库，不会自动搬移或改写审计数据。Python 发布包为 `traceshield`，内部导入路径仍为 `guard`。复制 `.env.example` 后按实际 provider 填写密钥即可。
+
+评测分组使用 `traceshield` / `traceshield_monitor`。旧 CLI 分组名仍可输入；控制台与归因脚本兼容读取历史 `bankfull_agent_guard*_shard*.json`，相同分片同时存在时优先读取新名称，避免重复计数。历史实验文件及原始结果键保持原样。
 
 ### 5.3 配置优先级
 
 | 配置 | 环境变量 / 参数 | 默认值或说明 |
 | --- | --- | --- |
-| Demo 任务模型 | `AGENT_GUARD_TASK_PROVIDER` / `--task-provider` | `kimi` |
-| Demo 审计模型 | `AGENT_GUARD_SEMANTIC_PROVIDER` / `--semantic-provider` | `deepseek` |
-| Demo 保护模式 | `AGENT_GUARD_PROTECTION_MODE` / `--protection` | `enforce` |
-| 审计数据库 | `AGENT_GUARD_DB_PATH` | 项目根目录 `agent-guard.db` |
-| 会话工作区 | `AGENT_GUARD_WORKSPACES_ROOT` | 项目根目录 `workspaces/` |
-| 策略文件 | `AGENT_GUARD_POLICY_FILE` | `policies/default.yaml` |
-| 模型配置文件 | `AGENT_GUARD_PROVIDERS_CONFIG` | `configs/providers.yaml` |
-| API / 固定语料模型 | `AGENT_GUARD_PROVIDER` | `local`；与 Demo 角色配置分开 |
+| Demo 任务模型 | `TRACESHIELD_TASK_PROVIDER` / `--task-provider` | `kimi` |
+| Demo 审计模型 | `TRACESHIELD_SEMANTIC_PROVIDER` / `--semantic-provider` | `deepseek` |
+| Demo 保护模式 | `TRACESHIELD_PROTECTION_MODE` / `--protection` | `enforce` |
+| 审计数据库 | `TRACESHIELD_DB_PATH` | 项目根目录 `traceshield.db` |
+| 会话工作区 | `TRACESHIELD_WORKSPACES_ROOT` | 项目根目录 `workspaces/` |
+| 策略文件 | `TRACESHIELD_POLICY_FILE` | `policies/default.yaml` |
+| 模型配置文件 | `TRACESHIELD_PROVIDERS_CONFIG` | `configs/providers.yaml` |
+| API / 固定语料模型 | `TRACESHIELD_PROVIDER` | `local`；与 Demo 角色配置分开 |
 
 Demo 命令行参数优先于对应环境变量。运行命令通过 `uv run --env-file .env ...` 显式加载配置；Demo 入口本身不会自动读取 `.env`。
 
@@ -263,7 +265,7 @@ Demo 命令行参数优先于对应环境变量。运行命令通过 `uv run --e
 终端一：
 
 ```bash
-uv run python console/server.py --db "$PWD/agent-guard.db"
+uv run python console/server.py --db "$PWD/traceshield.db"
 ```
 
 浏览器打开 **http://127.0.0.1:8001**。该服务同时提供构建后的页面和只读数据接口，不需要另起 Vite 或启动 8000 端口的网关 API。
@@ -277,9 +279,9 @@ Demo 默认使用 Kimi 执行任务、DeepSeek 进行语义审计。两个角色
 完成第 5.2 节的 `.env` 配置后，确认已填写 `KIMI_API_KEY`、`DEEPSEEK_API_KEY`，并选择演示使用的 provider：
 
 ```dotenv
-AGENT_GUARD_TASK_PROVIDER=kimi
-AGENT_GUARD_SEMANTIC_PROVIDER=deepseek
-AGENT_GUARD_PROTECTION_MODE=enforce
+TRACESHIELD_TASK_PROVIDER=kimi
+TRACESHIELD_SEMANTIC_PROVIDER=deepseek
+TRACESHIELD_PROTECTION_MODE=enforce
 ```
 
 这两个 provider 已在 YAML 中登记。如使用自定义审计服务，按第 5.2 节新增 provider 并修改对应角色变量。
@@ -404,7 +406,7 @@ npm --prefix console run build
 配置 `.env`、启动 Docker 并准备镜像后，运行正常读取的真实模型测试：
 
 ```bash
-AGENT_GUARD_SMOKE_SCENARIO=1 uv run --env-file .env pytest \
+TRACESHIELD_SMOKE_SCENARIO=1 uv run --env-file .env pytest \
   -m smoke tests/test_smoke_llm.py::test_readme_scenario_smoke -q
 ```
 
@@ -436,15 +438,15 @@ uv run --env-file .env python scripts/bench.py \
 | AgentDojo 分组 | 行为 |
 | --- | --- |
 | `direct` | 原生模拟工具直接执行，无 Guard |
-| `agent_guard` | 完成检查并实际实施裁决 |
-| `agent_guard_monitor` | 保存判断，绕过拦截后执行模拟工具 |
-| `both` | 依次运行 direct 与 agent_guard |
+| `traceshield` | 完成检查并实际实施裁决 |
+| `traceshield_monitor` | 保存判断，绕过拦截后执行模拟工具 |
+| `both` | 依次运行 direct 与 traceshield |
 
-仅监控需单独指定 `--arm agent_guard_monitor`。AgentDojo 的 `direct` 使用原生模拟运行时；Demo 的 `off` 仍使用受控执行器，两者的执行边界不同。
+仅监控需单独指定 `--arm traceshield_monitor`。AgentDojo 的 `direct` 使用原生模拟运行时；Demo 的 `off` 仍使用受控执行器，两者的执行边界不同。
 
 攻击来自模板、官方缓存或对话文件；AutoDojo 缓存和多轮 ChatInject 需额外准备资源路径。结果保存为指定 JSON 和同名 SQLite 库，包含 `utility`、`attack_success`、工具请求和裁决。`agent_calls` / `agent_tokens` 只统计任务模型，不包含审计模型用量。
 
-银行全量与论文攻击资源说明见 [银行报告](docs/bankfull_banking_report.md) 和 [实验脚本](scripts/run_bankfull.sh)。其中 `run_bankfull.sh` 包含实验环境路径，迁移前需要调整。
+银行全量与论文攻击资源说明见 [银行报告](docs/bankfull_banking_report.md) 和 [实验脚本](scripts/run_bankfull.sh)。其中 `run_bankfull.sh` 包含实验环境路径，迁移前需要调整；可通过 `CHATINJECT=/实际路径/对话文件.json bash scripts/run_bankfull.sh` 覆盖对话资源路径。
 
 ### 7.6 CVE 关联攻击模式
 
@@ -491,7 +493,7 @@ uv run python console/server.py \
 第三方 Agent 可通过独立的网关 API 获取裁决。内置 DemoAgent 使用 stdio，不依赖此服务：
 
 ```bash
-AGENT_GUARD_PROVIDER=deepseek uv run --env-file .env uvicorn \
+TRACESHIELD_PROVIDER=deepseek uv run --env-file .env uvicorn \
   guard.api.app:create_app --factory --host 127.0.0.1 --port 8000
 ```
 
@@ -506,7 +508,7 @@ AGENT_GUARD_PROVIDER=deepseek uv run --env-file .env uvicorn \
 | `GET /incidents` | 列出审计链路 |
 | `GET /incidents/{trace_id}` | 查看溯源 DAG 与时序 |
 
-裁决接口本身不执行工具，批准接口也不会自动恢复 DemoAgent。HTTP 接入方需要实现执行与批准后的重试流程。API 使用 `AGENT_GUARD_PROVIDER` 选择审计模型，Demo 的角色变量与模式开关不控制此 HTTP 入口。
+裁决接口本身不执行工具，批准接口也不会自动恢复 DemoAgent。HTTP 接入方需要实现执行与批准后的重试流程。API 使用 `TRACESHIELD_PROVIDER` 选择审计模型，Demo 的角色变量与模式开关不控制此 HTTP 入口。
 
 ### 9.2 本地任务模型
 

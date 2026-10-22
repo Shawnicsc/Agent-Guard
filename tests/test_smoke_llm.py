@@ -1,7 +1,7 @@
 """真实 LLM 冒烟测试（@smoke）：本地 llama.cpp 与 Ark 各真连一次。
 
 默认跳过；显式运行：uv run pytest -m smoke
-本地服务启动：make serve-local（或 AGENT_GUARD_PROVIDER=ark 使用远程）
+本地服务启动：make serve-local（或 TRACESHIELD_PROVIDER=ark 使用远程）
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import pytest
 
 from guard.llm.client import LLMClient
 from guard.llm.config import load_providers, resolve_provider
+from guard.naming import env_value
 
 pytestmark = pytest.mark.smoke
 
@@ -24,8 +25,8 @@ def _client(provider_name: str) -> LLMClient:
     return LLMClient(provider, name)
 
 
-@pytest.mark.skipif(os.environ.get("AGENT_GUARD_SMOKE_LOCAL") != "1",
-                    reason="显式设置 AGENT_GUARD_SMOKE_LOCAL=1 启用本地冒烟")
+@pytest.mark.skipif(env_value("TRACESHIELD_SMOKE_LOCAL") != "1",
+                    reason="显式设置 TRACESHIELD_SMOKE_LOCAL=1 启用本地冒烟")
 def test_local_llm_smoke():
     client = _client("local")
     assert client.health(), "本地 llama.cpp server 未启动（先 make serve-local）"
@@ -41,8 +42,8 @@ def test_ark_llm_smoke():
     assert response.content.strip()
 
 
-@pytest.mark.skipif(os.environ.get("AGENT_GUARD_SMOKE_SCENARIO") != "1",
-                    reason="显式设置 AGENT_GUARD_SMOKE_SCENARIO=1 启用场景冒烟（需 Docker）")
+@pytest.mark.skipif(env_value("TRACESHIELD_SMOKE_SCENARIO") != "1",
+                    reason="显式设置 TRACESHIELD_SMOKE_SCENARIO=1 启用场景冒烟（需 Docker）")
 def test_readme_scenario_smoke(tmp_path):
     """阶段 A 验收场景端到端真跑（依赖 LLM + Docker + 预拉镜像）。"""
     import sys
@@ -56,7 +57,7 @@ def test_readme_scenario_smoke(tmp_path):
     assert rc == 0
 
 
-@pytest.mark.skipif(os.environ.get("AGENT_GUARD_SMOKE_SEMANTIC") != "1",
+@pytest.mark.skipif(env_value("TRACESHIELD_SMOKE_SEMANTIC") != "1",
                     reason="显式启用阶段 C 本地语义冒烟")
 def test_semantic_injection_smoke():
     """用真实本地模型研判一个明确的外部指令诱导调用。"""

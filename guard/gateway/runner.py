@@ -96,7 +96,7 @@ class SandboxRunner:
                 and getattr(self.session.policy_engine, "uses_predicate",
                             lambda _name: False)("rehearsal_attributed"):
             try:
-                snapshot_tmp = tempfile.TemporaryDirectory(prefix="agent-guard-snapshot-")
+                snapshot_tmp = tempfile.TemporaryDirectory(prefix="traceshield-snapshot-")
                 self._snapshot = Path(snapshot_tmp.name) / "workspace"
                 shutil.copytree(self.session.workspace_root, self._snapshot, symlinks=True)
                 self._message = message
@@ -312,7 +312,7 @@ class SandboxRunner:
         if any(Path(host).resolve() != self.session.workspace_root.resolve()
                for host, _ in self.spec.extra_mounts):
             return ReplayOutcome(False, [], 0, "工作区外挂载无法安全复制")
-        with tempfile.TemporaryDirectory(prefix="agent-guard-replay-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="traceshield-replay-") as tmp:
             root = Path(tmp)
             replay_store = AuditStore(root / "audit.db")
             try:

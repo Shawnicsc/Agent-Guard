@@ -6,17 +6,17 @@ import { Badge, Empty, Icon, JsonView, Note, Panel } from './components';
 import { downloadJson, getJson } from './lib';
 import './presentation.css';
 
-type ArmId = 'direct' | 'agent_guard_monitor' | 'agent_guard';
+type ArmId = 'direct' | 'traceshield_monitor' | 'traceshield';
 type BankRun = { id: string; file: string; arm: ArmId; task: string; target: string; attack: string; trace_id: string | null; outcome: 'success' | 'failed' | 'unknown'; utility: boolean | null; visible: boolean | null; error: string | null; elapsed_s: number | null; tokens: number | null; has_block: boolean; calls: { name: string; arguments: string }[]; decisions: { function: string; action: string; bypassed: boolean; rule_ids: string[] }[] };
 type Arm = { arm: ArmId; total: number; successes: number; unknown: number; utility: number; utility_unknown: number; visible: number; block_runs: number; ci: [number, number] | null };
 type RehearsalCall = { tool: string; arguments: Record<string, unknown>; status: string; ok: boolean; error: string };
 type RehearsalEvent = { status: string; signals: string[]; replay_signals?: string[]; duration_ms: number; source_count: number; reason: string };
 type RehearsalRun = { task: string; cell: string; payload: string | null; completed: boolean; refused: number; elapsed_s: number; agent_tokens: number; calls: RehearsalCall[]; manifested: boolean; summary: string; trace_id: string; rehearsal_events: RehearsalEvent[]; attributed_blocks: number };
 type Presentation = { arms: Arm[]; runs: BankRun[]; cves: CveCase[]; files: { name: string; sha256: string; updated_at: string }[]; warnings: string[]; metadata: { timestamp: string; model: string; guard_detector_model: string; benchmark_version: string }[]; provenance: { kind: string; commit: string; bank_date: string; rehearsal_date: string; rehearsal_revision: string }; rehearsal: { runs: RehearsalRun[]; tasks: Record<string, { instruction: string; inject_file: string }>; summary: { total?: number; injected?: number; benign?: number; manifested?: number; blocked?: number; benign_blocks?: number; events?: number; unavailable?: number; p50?: number; p95?: number; tokens?: number } } };
-const labels: Record<ArmId, string> = { direct: '无防护', agent_guard_monitor: '仅监控', agent_guard: '强制防护' };
+const labels: Record<ArmId, string> = { direct: '无防护', traceshield_monitor: '仅监控', traceshield: '强制防护' };
 function useArmColors(): Record<ArmId, string> {
   const { palette } = useTheme();
-  return { direct: '#64748b', agent_guard_monitor: palette.secondary, agent_guard: palette.accent };
+  return { direct: '#64748b', traceshield_monitor: palette.secondary, traceshield: palette.accent };
 }
 const outcomeNames = { success: '攻击成功', failed: '攻击未成功', unknown: '错误 / 未知' };
 const rate = (n: number, d: number) => d ? `${(100 * n / d).toFixed(1)}%` : '—';
@@ -53,13 +53,13 @@ function Results({ data }: { data: Presentation }) {
   const colors = useArmColors();
   return <><Evidence>银行评测 · {data.provenance.bank_date} · {data.runs.length} 次攻击运行 · 模拟业务工具</Evidence>
     <div className="grid-two"><ComparisonChart arms={data.arms} /><ComparisonChart arms={data.arms} utility /></div>
-    <Panel title="从效果到代价，逐项核对"><div className="table-scroll"><table><thead><tr><th>模式</th><th>攻击成功 / 总运行</th><th>95% Wilson 区间</th><th>错误 / 未知</th><th>合法完成 / 总运行</th><th>载荷观测到</th><th>含 BLOCK 判定的运行</th></tr></thead><tbody>{data.arms.map(arm => <tr key={arm.arm}><td><span className="arm-dot" style={{ background: colors[arm.arm] }} />{labels[arm.arm]}</td><td>{arm.successes} / {arm.total}</td><td>{arm.ci ? `${(arm.ci[0] * 100).toFixed(2)}% – ${(arm.ci[1] * 100).toFixed(2)}%` : '无有效区间'}</td><td>{arm.unknown}</td><td>{arm.utility} / {arm.total}{arm.utility_unknown > 0 && `（未知 ${arm.utility_unknown}）`}</td><td>{arm.visible} / {arm.total}</td><td>{arm.block_runs}{arm.arm === 'agent_guard_monitor' ? '（仅记录，未强制拦截）' : ''}</td></tr>)}</tbody></table></div></Panel>
+    <Panel title="从效果到代价，逐项核对"><div className="table-scroll"><table><thead><tr><th>模式</th><th>攻击成功 / 总运行</th><th>95% Wilson 区间</th><th>错误 / 未知</th><th>合法完成 / 总运行</th><th>载荷观测到</th><th>含 BLOCK 判定的运行</th></tr></thead><tbody>{data.arms.map(arm => <tr key={arm.arm}><td><span className="arm-dot" style={{ background: colors[arm.arm] }} />{labels[arm.arm]}</td><td>{arm.successes} / {arm.total}</td><td>{arm.ci ? `${(arm.ci[0] * 100).toFixed(2)}% – ${(arm.ci[1] * 100).toFixed(2)}%` : '无有效区间'}</td><td>{arm.unknown}</td><td>{arm.utility} / {arm.total}{arm.utility_unknown > 0 && `（未知 ${arm.utility_unknown}）`}</td><td>{arm.visible} / {arm.total}</td><td>{arm.block_runs}{arm.arm === 'traceshield_monitor' ? '（仅记录，未强制拦截）' : ''}</td></tr>)}</tbody></table></div></Panel>
     <div className="report-insight"><strong>统计范围</strong><p>仅统计当前银行评测存档中的 {data.runs.length} 次攻击运行。CVE 场景与隔离彩排单独展示，不计入银行攻击成功率或任务完成率。</p></div>
     <Note>每个任务与载荷组合单次运行，同一任务下的样本可能相关；Wilson 区间按逐运行二项模型计算，仅作为描述性区间。载荷可见性与攻击成功是不同字段。该银行实验不包含新增彩排层的效果验证。</Note>
   </>;
 }
 function Coverage({ data }: { data: Presentation }) {
-  const [arm, setArm] = useState<ArmId>('agent_guard');
+  const [arm, setArm] = useState<ArmId>('traceshield');
   const [variant, setVariant] = useState('all');
   const [cell, setCell] = useState<{ task: string; target: string } | null>(null);
   const [runId, setRunId] = useState('');

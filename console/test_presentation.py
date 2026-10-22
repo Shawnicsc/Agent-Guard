@@ -23,10 +23,14 @@ class PresentationEvidenceTests(unittest.TestCase):
         self.assertTrue(all(case['passed'] for case in data['cves']))
         self.assertIn('cve_reproduction.json', [file['name'] for file in data['files']])
         self.assertEqual(data['warnings'], [])
+        self.assertEqual([a['arm'] for a in data['arms']],
+                         ['direct', 'traceshield_monitor', 'traceshield'])
         self.assertGreater(data['arms'][2]['ci'][1], .0088)
         self.assertLess(data['arms'][2]['ci'][1], .0089)
         summary = data['rehearsal']['summary']
-        self.assertEqual([summary[k] for k in ('total', 'injected', 'benign', 'manifested', 'blocked', 'benign_blocks', 'events', 'unavailable')],
+        keys = ('total', 'injected', 'benign', 'manifested', 'blocked',
+                'benign_blocks', 'events', 'unavailable')
+        self.assertEqual([summary[k] for k in keys],
                          [64, 32, 32, 18, 18, 0, 28, 2])
         self.assertIn('count-http-500', data['rehearsal']['tasks'])
 

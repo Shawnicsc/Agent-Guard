@@ -41,7 +41,7 @@ make serve-local                  # OpenAI 兼容端点 127.0.0.1:8080
 ```bash
 export ARK_API_KEY=<你的密钥>      # 密钥只经环境变量，绝不入库
 # 编辑 configs/providers.yaml 的 ark.model 为你的 endpoint/model id
-export AGENT_GUARD_PROVIDER=ark
+export TRACESHIELD_PROVIDER=ark
 ```
 
 ### 3.4 启动网关 API（第三方 Agent 接入用）
@@ -61,17 +61,17 @@ make run-demo   # a_readme（正常读取）+ a_escape（沙箱逃逸被挡）
 
 Demo 默认任务模型为 Kimi、语义审计模型为 DeepSeek，`make run-demo` 从 `.env`
 加载 `KIMI_API_KEY` 和 `DEEPSEEK_API_KEY`；另需 Docker daemon 与
-`python:3.12-slim` 镜像。可用 `AGENT_GUARD_TASK_PROVIDER`、
-`AGENT_GUARD_SEMANTIC_PROVIDER` 分别覆盖模型。保护开关为
+`python:3.12-slim` 镜像。可用 `TRACESHIELD_TASK_PROVIDER`、
+`TRACESHIELD_SEMANTIC_PROVIDER` 分别覆盖模型。保护开关为
 `--protection enforce|monitor|off`，对照场景与完整命令见 [README](../README.md)。
 
 ## 4. 配置说明
 
 - `configs/providers.yaml`：LLM provider（本地/远程统一 OpenAI 协议）。
-  API / bench 使用 `AGENT_GUARD_PROVIDER`；Demo 使用独立的
-  `AGENT_GUARD_TASK_PROVIDER` / `AGENT_GUARD_SEMANTIC_PROVIDER`。
-- `guard/config.py`：数据库路径（默认 `agent-guard.db`，SQLite WAL）、
-  工作区根目录、沙箱镜像。所有配置可经 `AGENT_GUARD_*` 环境变量覆盖。
+  API / bench 使用 `TRACESHIELD_PROVIDER`；Demo 使用独立的
+  `TRACESHIELD_TASK_PROVIDER` / `TRACESHIELD_SEMANTIC_PROVIDER`。
+- `guard/config.py`：数据库路径（默认 `traceshield.db`，SQLite WAL）、
+  工作区根目录、沙箱镜像。所有配置可经 `TRACESHIELD_*` 环境变量覆盖。
 
 ## 5. 安全边界（当前阶段）
 
