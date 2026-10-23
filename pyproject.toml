@@ -2,6 +2,7 @@
 name = "traceshield"
 version = "0.1.0"
 description = "基于意图对齐与多源溯源的Agent间接提示词注入防护系统"
+license = "MIT"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi>=0.115",
